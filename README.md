@@ -10,7 +10,9 @@ After the compilation is finished apply the patches inside android-vlc folder:
 Change to vlc folder and apply patch:
 
 > cd vlc/
+
 > git apply --verbose $PATH_TO_REPOSITORY/vlc/0001-Support-for-multiple-video-instances.patch
+
 > cd ../
 
 Recompile the code:
