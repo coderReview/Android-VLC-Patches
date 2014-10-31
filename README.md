@@ -16,3 +16,8 @@ Change to vlc folder and apply patch:
 Recompile the code:
 > ./compile.sh --build
 
+Note:
+=====
+
+This based on android vlc commit hash <b>2e0033552062e51753af1442227065423986022b</b>.
+
