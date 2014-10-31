@@ -21,5 +21,5 @@ Recompile the code:
 Note:
 =====
 
-The patches are based on android vlc commit hash <b>2e0033552062e51753af1442227065423986022b</b>.
+The patches are based on android vlc commit hash b13ca4573d9f1a7ad5818334261cc6a0e1be7108.
 
