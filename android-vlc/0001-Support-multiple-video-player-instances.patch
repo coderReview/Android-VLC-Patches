@@ -1,0 +1,465 @@
+From 94cd29bf2e92da71beeac1ba48bed1d4976bc14d Mon Sep 17 00:00:00 2001
+From: Paulo Vitor Magacho da Silva <pvmagacho@gmail.com>
+Date: Thu, 30 Oct 2014 01:44:11 -0200
+Subject: [PATCH] Support multiple video player instances.
+
+Support multiple videos.
+---
+ vlc-android/jni/libvlcjni.c                        |  63 ++++++++--
+ vlc-android/jni/vout.c                             | 140 +++++++++++----------
+ vlc-android/jni/vout.h                             |  14 ++-
+ vlc-android/src/org/videolan/libvlc/LibVLC.java    |  21 +++-
+ .../org/videolan/vlc/gui/PreferencesActivity.java  |   2 +-
+ 5 files changed, 152 insertions(+), 88 deletions(-)
+
+diff --git a/vlc-android/jni/libvlcjni.c b/vlc-android/jni/libvlcjni.c
+index 0813d7c..83e4221 100644
+--- a/vlc-android/jni/libvlcjni.c
++++ b/vlc-android/jni/libvlcjni.c
+@@ -115,7 +115,7 @@ static void releaseMediaPlayer(JNIEnv *env, jobject thiz)
+  * Note: It's okay to use a static variable for the VM pointer since there
+  * can only be one instance of this shared library in a single VM
+  */
+-static JavaVM *myVm;
++JavaVM *myVm;
+ 
+ static jobject eventHandlerInstance = NULL;
+ 
+@@ -194,9 +194,10 @@ static void vlc_event_callback(const libvlc_event_t *ev, void *data)
+     }
+ 
+     /* Find the callback ID */
+-    jmethodID methodID = (*env)->GetMethodID(env, cls, "callback", "(ILandroid/os/Bundle;)V");
++    jobject vlcObject = (jobject) data;
++    jmethodID methodID = (*env)->GetMethodID(env, cls, "callback", "(ILandroid/os/Bundle;Lorg/videolan/libvlc/LibVLC;)V");
+     if (methodID) {
+-        (*env)->CallVoidMethod(env, eventHandlerInstance, methodID, ev->type, bundle);
++        (*env)->CallVoidMethod(env, eventHandlerInstance, methodID, ev->type, bundle, vlcObject);
+     } else {
+         LOGE("EventHandler: failed to get the callback method");
+     }
+@@ -212,16 +213,27 @@ jint JNI_OnLoad(JavaVM *vm, void *reserved)
+     // Keep a reference on the Java VM.
+     myVm = vm;
+ 
+-    pthread_mutex_init(&vout_android_lock, NULL);
+-    pthread_cond_init(&vout_android_surf_attached, NULL);
++    JNIEnv* env;
++    if (jni_get_env(&env) < 0) {
++        return -1;
++    }
++
++    jclass eventHandlerCls = (*env)->FindClass(env, "org/videolan/libvlc/EventHandler");
++    jmethodID methodId = (*env)->GetStaticMethodID(env, eventHandlerCls, "getInstance", "()Lorg/videolan/libvlc/EventHandler;");
++    jobject eventHandler = (*env)->CallStaticObjectMethod(env, eventHandlerCls, methodId);
++
++    eventHandlerInstance = (*env)->NewGlobalRef(env, eventHandler);
+ 
+     LOGD("JNI interface loaded.");
+     return VLC_JNI_VERSION;
+ }
+ 
+ void JNI_OnUnload(JavaVM* vm, void* reserved) {
+-    pthread_mutex_destroy(&vout_android_lock);
+-    pthread_cond_destroy(&vout_android_surf_attached);
++    JNIEnv* env;
++    if (jni_get_env(&env) == 0 && eventHandlerInstance != NULL) {
++        (*env)->DeleteGlobalRef(env, eventHandlerInstance);
++    }
++    LOGD("JNI interface un-loaded.");
+ }
+ 
+ int jni_attach_thread(JNIEnv **env, const char *thread_name)
+@@ -250,8 +262,22 @@ int jni_get_env(JNIEnv **env)
+ // FIXME: use atomics
+ static bool verbosity;
+ 
++
+ void Java_org_videolan_libvlc_LibVLC_nativeInit(JNIEnv *env, jobject thiz)
+ {
++    // initialize android_surface_value_t structure
++    android_surf_value_t *android_surface = (android_surf_value_t *) malloc(sizeof(android_surf_value_t));
++
++    android_surface->vout_android_surf = NULL;
++    android_surface->vout_android_gui = NULL;
++    android_surface->vout_android_java_surf = NULL;
++    android_surface->vout_android_subtitles_surf = NULL;
++
++    pthread_mutex_init(&android_surface->vout_android_lock, NULL);
++    pthread_cond_init(&android_surface->vout_android_surf_attached, NULL);
++
++    setLong(env, thiz, "mAndroidSurfaceValue", (jlong)(intptr_t)android_surface);
++
+     //only use OpenSLES if java side says we can
+     jclass cls = (*env)->GetObjectClass(env, thiz);
+     jmethodID methodId = (*env)->GetMethodID(env, cls, "getAout", "()I");
+@@ -360,12 +386,23 @@ void Java_org_videolan_libvlc_LibVLC_nativeInit(JNIEnv *env, jobject thiz)
+ 
+     libvlc_log_set(instance, debug_log, &verbosity);
+ 
+-    init_native_crash_handler(env, thiz);
++    // init_native_crash_handler(env, thiz);
+ }
+ 
+ void Java_org_videolan_libvlc_LibVLC_nativeDestroy(JNIEnv *env, jobject thiz)
+ {
+-    destroy_native_crash_handler(env);
++    // clear surface lock and condition
++    android_surf_value_t *android_surface = (android_surf_value_t *)(intptr_t)getLong(env, thiz, "mAndroidSurfaceValue");
++
++    if (android_surface != NULL) {
++        pthread_mutex_destroy(&android_surface->vout_android_lock);
++        pthread_cond_destroy(&android_surface->vout_android_surf_attached);
++
++        free(android_surface);
++    }
++    setLong(env, thiz, "mAndroidSurfaceValue", 0);
++
++    // destroy_native_crash_handler(env);
+ 
+     releaseMediaPlayer(env, thiz);
+     jlong libVlcInstance = getLong(env, thiz, "mLibVlcInstance");
+@@ -431,7 +468,7 @@ void Java_org_videolan_libvlc_LibVLC_playMRL(JNIEnv *env, jobject thiz, jlong in
+         libvlc_MediaPlayerEncounteredError
+     };
+     for(int i = 0; i < (sizeof(mp_events) / sizeof(*mp_events)); i++)
+-        libvlc_event_attach(ev, mp_events[i], vlc_event_callback, myVm);
++        libvlc_event_attach(ev, mp_events[i], vlc_event_callback, (void*) myJavaLibVLC);
+ 
+     /* Keep a pointer to this media player */
+     setLong(env, thiz, "mInternalMediaPlayerInstance", (jlong)(intptr_t)mp);
+@@ -449,13 +486,17 @@ void Java_org_videolan_libvlc_LibVLC_playMRL(JNIEnv *env, jobject thiz, jlong in
+ 
+     (*env)->ReleaseStringUTFChars(env, mrl, p_mrl);
+ 
++    // set the Android surface value structure before playing
++    android_surf_value_t *object = (android_surf_value_t *)(intptr_t)getLong(env, thiz, "mAndroidSurfaceValue");
++    libvlc_media_player_set_surfacevalue(mp, object);
++
+     /* Connect the media event manager. */
+     libvlc_event_manager_t *ev_media = libvlc_media_event_manager(p_md);
+     static const libvlc_event_type_t mp_media_events[] = {
+         libvlc_MediaParsedChanged
+     };
+     for(int i = 0; i < (sizeof(mp_media_events) / sizeof(*mp_media_events)); i++)
+-        libvlc_event_attach(ev_media, mp_media_events[i], vlc_event_callback, myVm);
++        libvlc_event_attach(ev_media, mp_media_events[i], vlc_event_callback, (void*) myJavaLibVLC);
+ 
+     libvlc_media_player_set_media(mp, p_md);
+     libvlc_media_player_play(mp);
+diff --git a/vlc-android/jni/vout.c b/vlc-android/jni/vout.c
+index e178bcb..69abab4 100644
+--- a/vlc-android/jni/vout.c
++++ b/vlc-android/jni/vout.c
+@@ -22,98 +22,95 @@
+ #include <vlc_common.h>
+ 
+ #include <jni.h>
++#include "vout.h"
+ 
+ #define THREAD_NAME "jni_vout"
+ extern int jni_attach_thread(JNIEnv **env, const char *thread_name);
+ extern void jni_detach_thread();
+ 
+-pthread_mutex_t vout_android_lock;
+-pthread_cond_t vout_android_surf_attached;
+-static void *vout_android_surf = NULL;
+-static void *vout_android_gui = NULL;
+-static jobject vout_android_java_surf = NULL;
+-static jobject vout_android_subtitles_surf = NULL;
+-static bool vout_video_player_activity_created = false;
+-
+-void *jni_LockAndGetSubtitlesSurface() {
+-    pthread_mutex_lock(&vout_android_lock);
+-    while (vout_android_subtitles_surf == NULL)
+-        pthread_cond_wait(&vout_android_surf_attached, &vout_android_lock);
+-    return vout_android_subtitles_surf;
++
++void *jni_LockAndGetSubtitlesSurface(android_surf_value_t *android_surface) {
++    pthread_mutex_lock(&android_surface->vout_android_lock);
++    while (android_surface->vout_android_subtitles_surf == NULL)
++        pthread_cond_wait(&android_surface->vout_android_surf_attached, &android_surface->vout_android_lock);
++    return android_surface->vout_android_subtitles_surf;
+ }
+ 
+-void *jni_LockAndGetAndroidSurface() {
+-    pthread_mutex_lock(&vout_android_lock);
+-    while (vout_android_surf == NULL)
+-        pthread_cond_wait(&vout_android_surf_attached, &vout_android_lock);
+-    return vout_android_surf;
++void *jni_LockAndGetAndroidSurface(android_surf_value_t *android_surface) {
++    pthread_mutex_lock(&android_surface->vout_android_lock);
++    while (android_surface->vout_android_surf == NULL)
++        pthread_cond_wait(&android_surface->vout_android_surf_attached, &android_surface->vout_android_lock);
++    return android_surface->vout_android_surf;
+ }
+ 
+-jobject jni_LockAndGetAndroidJavaSurface() {
+-    pthread_mutex_lock(&vout_android_lock);
+-    while (vout_android_java_surf == NULL)
+-        pthread_cond_wait(&vout_android_surf_attached, &vout_android_lock);
+-    return vout_android_java_surf;
++jobject jni_LockAndGetAndroidJavaSurface(android_surf_value_t *android_surface) {
++    pthread_mutex_lock(&android_surface->vout_android_lock);
++    while (android_surface->vout_android_java_surf == NULL)
++        pthread_cond_wait(&android_surface->vout_android_surf_attached, &android_surface->vout_android_lock);
++    return android_surface->vout_android_java_surf;
+ }
+ 
+-void jni_UnlockAndroidSurface() {
+-    pthread_mutex_unlock(&vout_android_lock);
++void jni_UnlockAndroidSurface(android_surf_value_t *android_surface) {
++    pthread_mutex_unlock(&android_surface->vout_android_lock);
+ }
+ 
+-void jni_EventHardwareAccelerationError()
++void jni_EventHardwareAccelerationError(android_surf_value_t *android_surface)
+ {
+-    if (vout_android_gui == NULL)
++    if (android_surface->vout_android_gui == NULL)
+         return;
+ 
+     JNIEnv *env;
+     jni_attach_thread(&env, THREAD_NAME);
+ 
+-    jclass cls = (*env)->GetObjectClass(env, vout_android_gui);
++    jclass cls = (*env)->GetObjectClass(env, android_surface->vout_android_gui);
+     jmethodID methodId = (*env)->GetMethodID(env, cls, "eventHardwareAccelerationError", "()V");
+-    (*env)->CallVoidMethod(env, vout_android_gui, methodId);
++    (*env)->CallVoidMethod(env, android_surface->vout_android_gui, methodId);
+ 
+     (*env)->DeleteLocalRef(env, cls);
+     jni_detach_thread();
+ }
+ 
+-void jni_SetAndroidSurfaceSizeEnv(JNIEnv *p_env, int width, int height, int visible_width, int visible_height, int sar_num, int sar_den)
++void jni_SetAndroidSurfaceSizeEnv(JNIEnv *p_env, android_surf_value_t *android_surface, int width, int height, int visible_width, int visible_height, int sar_num, int sar_den)
+ {
+-    if (vout_android_gui == NULL)
++    if (android_surface->vout_android_gui == NULL)
+         return;
+ 
+-    jclass cls = (*p_env)->GetObjectClass (p_env, vout_android_gui);
++    jclass cls = (*p_env)->GetObjectClass (p_env, android_surface->vout_android_gui);
+     jmethodID methodId = (*p_env)->GetMethodID (p_env, cls, "setSurfaceSize", "(IIIIII)V");
+ 
+-    (*p_env)->CallVoidMethod (p_env, vout_android_gui, methodId, width, height, visible_width, visible_height, sar_num, sar_den);
++    (*p_env)->CallVoidMethod (p_env, android_surface->vout_android_gui, methodId, width, height, visible_width, visible_height, sar_num, sar_den);
+ 
+     (*p_env)->DeleteLocalRef(p_env, cls);
+ }
+ 
+-void jni_SetAndroidSurfaceSize(int width, int height, int visible_width, int visible_height, int sar_num, int sar_den)
++void jni_SetAndroidSurfaceSize(android_surf_value_t *android_surface, int width, int height, int visible_width, int visible_height, int sar_num, int sar_den)
+ {
+-    JNIEnv *p_env;
+-
+-    jni_attach_thread(&p_env, THREAD_NAME);
+-    jni_SetAndroidSurfaceSizeEnv(p_env, width, height, visible_width, visible_height, sar_num, sar_den);
++    JNIEnv *env;
++    jni_attach_thread(&env, THREAD_NAME);
+ 
++    jni_SetAndroidSurfaceSizeEnv(env, android_surface, width, height, visible_width, visible_height, sar_num, sar_den);
+     jni_detach_thread();
+ }
+ 
+-bool jni_IsVideoPlayerActivityCreated() {
+-    pthread_mutex_lock(&vout_android_lock);
+-    bool result = vout_video_player_activity_created;
+-    pthread_mutex_unlock(&vout_android_lock);
++bool jni_IsVideoPlayerActivityCreated(android_surf_value_t *android_surface) {
++    pthread_mutex_lock(&android_surface->vout_android_lock);
++    bool result = android_surface->vout_video_player_activity_created;
++    pthread_mutex_unlock(&android_surface->vout_android_lock);
+     return result;
+ }
+ 
+ void Java_org_videolan_libvlc_LibVLC_eventVideoPlayerActivityCreated(JNIEnv *env, jobject thiz, jboolean created) {
+-    pthread_mutex_lock(&vout_android_lock);
+-    vout_video_player_activity_created = created;
+-    pthread_mutex_unlock(&vout_android_lock);
++    android_surf_value_t * android_surface = (android_surf_value_t *)(intptr_t)getLong(env, thiz, "mAndroidSurfaceValue");
++
++    pthread_mutex_lock(&android_surface->vout_android_lock);
++    android_surface->vout_video_player_activity_created = created;
++    pthread_mutex_unlock(&android_surface->vout_android_lock);
+ }
+ 
+ void Java_org_videolan_libvlc_LibVLC_attachSurface(JNIEnv *env, jobject thiz, jobject surf, jobject gui) {
+-    pthread_mutex_lock(&vout_android_lock);
++    android_surf_value_t * android_surface = (android_surf_value_t *)(intptr_t)getLong(env, thiz, "mAndroidSurfaceValue");
++
++    pthread_mutex_lock(&android_surface->vout_android_lock);
+     jclass clz;
+     jfieldID fid;
+ 
+@@ -132,39 +129,46 @@ void Java_org_videolan_libvlc_LibVLC_attachSurface(JNIEnv *env, jobject thiz, jo
+             }
+             fid = (*env)->GetFieldID(env, clz, "mNativeSurface", "I");
+         }
+-        vout_android_surf = (void*)(*env)->GetIntField(env, surf, fid);
++        android_surface->vout_android_surf = (void*)(*env)->GetIntField(env, surf, fid);
+         (*env)->DeleteLocalRef(env, clz);
+     }
+-    vout_android_gui = (*env)->NewGlobalRef(env, gui);
+-    vout_android_java_surf = (*env)->NewGlobalRef(env, surf);
+-    pthread_cond_signal(&vout_android_surf_attached);
+-    pthread_mutex_unlock(&vout_android_lock);
++    android_surface->vout_android_gui = (*env)->NewGlobalRef(env, gui);
++    android_surface->vout_android_java_surf = (*env)->NewGlobalRef(env, surf);
++    pthread_cond_signal(&android_surface->vout_android_surf_attached);
++    pthread_mutex_unlock(&android_surface->vout_android_lock);
+ }
+ 
+ void Java_org_videolan_libvlc_LibVLC_detachSurface(JNIEnv *env, jobject thiz) {
+-    pthread_mutex_lock(&vout_android_lock);
+-    vout_android_surf = NULL;
+-    if (vout_android_gui != NULL)
+-        (*env)->DeleteGlobalRef(env, vout_android_gui);
+-    if (vout_android_java_surf != NULL)
+-        (*env)->DeleteGlobalRef(env, vout_android_java_surf);
+-    vout_android_gui = NULL;
+-    vout_android_java_surf = NULL;
+-    pthread_mutex_unlock(&vout_android_lock);
++    android_surf_value_t * android_surface = (android_surf_value_t *)(intptr_t)getLong(env, thiz, "mAndroidSurfaceValue");
++
++    pthread_mutex_lock(&android_surface->vout_android_lock);
++    android_surface->vout_android_surf = NULL;
++    if (android_surface->vout_android_gui != NULL)
++        (*env)->DeleteGlobalRef(env, android_surface->vout_android_gui);
++    if (android_surface->vout_android_java_surf != NULL)
++        (*env)->DeleteGlobalRef(env, android_surface->vout_android_java_surf);
++    android_surface->vout_android_gui = NULL;
++    android_surface->vout_android_java_surf = NULL;
++    pthread_mutex_unlock(&android_surface->vout_android_lock);
+ }
+ 
+ void Java_org_videolan_libvlc_LibVLC_attachSubtitlesSurface(JNIEnv *env, jobject thiz, jobject surf) {
+-    pthread_mutex_lock(&vout_android_lock);
+-    vout_android_subtitles_surf = (*env)->NewGlobalRef(env, surf);
+-    pthread_cond_signal(&vout_android_surf_attached);
+-    pthread_mutex_unlock(&vout_android_lock);
++    android_surf_value_t * android_surface = (android_surf_value_t *)(intptr_t)getLong(env, thiz, "mAndroidSurfaceValue");
++
++    pthread_mutex_lock(&android_surface->vout_android_lock);
++    android_surface->vout_android_subtitles_surf = (*env)->NewGlobalRef(env, surf);
++    pthread_cond_signal(&android_surface->vout_android_surf_attached);
++    pthread_mutex_unlock(&android_surface->vout_android_lock);
+ }
+ 
+ void Java_org_videolan_libvlc_LibVLC_detachSubtitlesSurface(JNIEnv *env, jobject thiz) {
+-    pthread_mutex_lock(&vout_android_lock);
+-    (*env)->DeleteGlobalRef(env, vout_android_subtitles_surf);
+-    vout_android_subtitles_surf = NULL;
+-    pthread_mutex_unlock(&vout_android_lock);
++    android_surf_value_t * android_surface = (android_surf_value_t *)(intptr_t)getLong(env, thiz, "mAndroidSurfaceValue");
++
++    pthread_mutex_lock(&android_surface->vout_android_lock);
++    if (android_surface->vout_android_subtitles_surf != NULL)
++        (*env)->DeleteGlobalRef(env, android_surface->vout_android_subtitles_surf);
++    android_surface->vout_android_subtitles_surf = NULL;
++    pthread_mutex_unlock(&android_surface->vout_android_lock);
+ }
+ 
+ static int mouse_x = -1;
+diff --git a/vlc-android/jni/vout.h b/vlc-android/jni/vout.h
+index c3d4fd7..c439c12 100644
+--- a/vlc-android/jni/vout.h
++++ b/vlc-android/jni/vout.h
+@@ -21,8 +21,16 @@
+ #ifndef LIBVLCJNI_VOUT_H
+ #define LIBVLCJNI_VOUT_H
+ 
+-/* vout lock initialized in vout.c */
+-pthread_mutex_t vout_android_lock;
+-pthread_cond_t vout_android_surf_attached;
++#include <pthread.h>
++
++typedef struct android_surf_value_t {
++    pthread_mutex_t vout_android_lock;
++    pthread_cond_t vout_android_surf_attached;
++    void *vout_android_surf;
++    void *vout_android_gui;
++    jobject vout_android_java_surf;
++    jobject vout_android_subtitles_surf;
++    bool vout_video_player_activity_created;
++} android_surf_value_t;
+ 
+ #endif // LIBVLCJNI_VOUT_H
+diff --git a/vlc-android/src/org/videolan/libvlc/LibVLC.java b/vlc-android/src/org/videolan/libvlc/LibVLC.java
+index 8d5ad0e..e941135 100644
+--- a/vlc-android/src/org/videolan/libvlc/LibVLC.java
++++ b/vlc-android/src/org/videolan/libvlc/LibVLC.java
+@@ -59,6 +59,9 @@ public class LibVLC {
+     private int mInternalMediaPlayerIndex = 0; // Read-only, reserved for JNI
+     private long mInternalMediaPlayerInstance = 0; // Read-only, reserved for JNI
+ 
++    // Android surface structure
++    private long mAndroidSurfaceValue = 0; // Read-only, reserved for JNI
++
+     private MediaList mMediaList; // Pointer to media list being followed
+     private MediaList mPrimaryList; // Primary/default media list; see getPrimaryMediaList()
+ 
+@@ -167,10 +170,9 @@ public class LibVLC {
+     }
+ 
+     /**
+-     * Constructor
+-     * It is private because this class is a singleton.
++     * Constructor.
+      */
+-    private LibVLC() {
++    public LibVLC() {
+         mAout = new AudioOutput();
+     }
+ 
+@@ -236,7 +238,7 @@ public class LibVLC {
+      */
+     public native void setSurface(Surface f);
+ 
+-    public static synchronized void restart(Context context) {
++    public static synchronized void restartInstance(Context context) {
+         if (sInstance != null) {
+             try {
+                 sInstance.destroy();
+@@ -247,6 +249,15 @@ public class LibVLC {
+         }
+     }
+ 
++    public void restart(Context context) {
++        try {
++            this.destroy();
++            this.init(context);
++        } catch (LibVlcException lve) {
++            Log.e(TAG, "Unable to reinit libvlc: " + lve);
++        }
++    }
++
+     /**
+      * those get/is* are called from native code to get settings values.
+      */
+@@ -457,7 +468,7 @@ public class LibVLC {
+         applyEqualizer();
+     }
+ 
+-    private void applyEqualizer()
++    protected void applyEqualizer()
+     {
+         setNativeEqualizer(mInternalMediaPlayerInstance, this.equalizer);
+     }
+diff --git a/vlc-android/src/org/videolan/vlc/gui/PreferencesActivity.java b/vlc-android/src/org/videolan/vlc/gui/PreferencesActivity.java
+index 9f0109c..b069452 100644
+--- a/vlc-android/src/org/videolan/vlc/gui/PreferencesActivity.java
++++ b/vlc-android/src/org/videolan/vlc/gui/PreferencesActivity.java
+@@ -292,7 +292,7 @@ public class PreferencesActivity extends PreferenceActivity implements OnSharedP
+                 || key.equalsIgnoreCase("network_caching")
+                 || key.equalsIgnoreCase("dev_hardware_decoder")) {
+             VLCInstance.updateLibVlcSettings(sharedPreferences);
+-            LibVLC.restart(this);
++            LibVLC.restartInstance(this);
+         }
+     }
+ 
+-- 
+1.9.3 (Apple Git-50)
+
