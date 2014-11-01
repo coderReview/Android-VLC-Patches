@@ -1,30 +1,7 @@
-From 94cd29bf2e92da71beeac1ba48bed1d4976bc14d Mon Sep 17 00:00:00 2001
-From: Paulo Vitor Magacho da Silva <pvmagacho@gmail.com>
-Date: Thu, 30 Oct 2014 01:44:11 -0200
-Subject: [PATCH] Support multiple video player instances.
-
-Support multiple videos.
----
- vlc-android/jni/libvlcjni.c                        |  63 ++++++++--
- vlc-android/jni/vout.c                             | 140 +++++++++++----------
- vlc-android/jni/vout.h                             |  14 ++-
- vlc-android/src/org/videolan/libvlc/LibVLC.java    |  21 +++-
- .../org/videolan/vlc/gui/PreferencesActivity.java  |   2 +-
- 5 files changed, 152 insertions(+), 88 deletions(-)
-
 diff --git a/vlc-android/jni/libvlcjni.c b/vlc-android/jni/libvlcjni.c
-index 0813d7c..83e4221 100644
+index 1ab151c..2e12844 100644
 --- a/vlc-android/jni/libvlcjni.c
 +++ b/vlc-android/jni/libvlcjni.c
-@@ -115,7 +115,7 @@ static void releaseMediaPlayer(JNIEnv *env, jobject thiz)
-  * Note: It's okay to use a static variable for the VM pointer since there
-  * can only be one instance of this shared library in a single VM
-  */
--static JavaVM *myVm;
-+JavaVM *myVm;
- 
- static jobject eventHandlerInstance = NULL;
- 
 @@ -194,9 +194,10 @@ static void vlc_event_callback(const libvlc_event_t *ev, void *data)
      }
  
@@ -387,10 +364,10 @@ index c3d4fd7..c439c12 100644
  
  #endif // LIBVLCJNI_VOUT_H
 diff --git a/vlc-android/src/org/videolan/libvlc/LibVLC.java b/vlc-android/src/org/videolan/libvlc/LibVLC.java
-index 8d5ad0e..e941135 100644
+index 790855a..a60d460 100644
 --- a/vlc-android/src/org/videolan/libvlc/LibVLC.java
 +++ b/vlc-android/src/org/videolan/libvlc/LibVLC.java
-@@ -59,6 +59,9 @@ public class LibVLC {
+@@ -65,6 +65,9 @@ public class LibVLC {
      private int mInternalMediaPlayerIndex = 0; // Read-only, reserved for JNI
      private long mInternalMediaPlayerInstance = 0; // Read-only, reserved for JNI
  
@@ -400,7 +377,7 @@ index 8d5ad0e..e941135 100644
      private MediaList mMediaList; // Pointer to media list being followed
      private MediaList mPrimaryList; // Primary/default media list; see getPrimaryMediaList()
  
-@@ -167,10 +170,9 @@ public class LibVLC {
+@@ -173,10 +176,9 @@ public class LibVLC {
      }
  
      /**
@@ -413,7 +390,7 @@ index 8d5ad0e..e941135 100644
          mAout = new AudioOutput();
      }
  
-@@ -236,7 +238,7 @@ public class LibVLC {
+@@ -242,7 +244,7 @@ public class LibVLC {
       */
      public native void setSurface(Surface f);
  
@@ -422,7 +399,7 @@ index 8d5ad0e..e941135 100644
          if (sInstance != null) {
              try {
                  sInstance.destroy();
-@@ -247,6 +249,15 @@ public class LibVLC {
+@@ -253,6 +255,15 @@ public class LibVLC {
          }
      }
  
@@ -438,7 +415,7 @@ index 8d5ad0e..e941135 100644
      /**
       * those get/is* are called from native code to get settings values.
       */
-@@ -457,7 +468,7 @@ public class LibVLC {
+@@ -463,7 +474,7 @@ public class LibVLC {
          applyEqualizer();
      }
  
@@ -460,6 +437,3 @@ index 9f0109c..b069452 100644
          }
      }
  
--- 
-1.9.3 (Apple Git-50)
-
