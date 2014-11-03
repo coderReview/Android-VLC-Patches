@@ -363,6 +363,69 @@ index c3d4fd7..c439c12 100644
 +} android_surf_value_t;
  
  #endif // LIBVLCJNI_VOUT_H
+diff --git a/vlc-android/src/org/videolan/libvlc/EventHandler.java b/vlc-android/src/org/videolan/libvlc/EventHandler.java
+index 16a0791..a816e06 100644
+--- a/vlc-android/src/org/videolan/libvlc/EventHandler.java
++++ b/vlc-android/src/org/videolan/libvlc/EventHandler.java
+@@ -21,6 +21,9 @@
+ package org.videolan.libvlc;
+ 
+ import java.util.ArrayList;
++import java.util.HashMap;
++import java.util.List;
++import java.util.Map;
+ 
+ import android.os.Bundle;
+ import android.os.Handler;
+@@ -96,11 +99,11 @@ public class EventHandler {
+ 
+     public static final int HardwareAccelerationError         = 0x3000;
+ 
+-    private ArrayList<Handler> mEventHandler;
++    private Map<LibVLC, ArrayList<Handler>> mMapHandler;
+     private static EventHandler mInstance;
+ 
+     EventHandler() {
+-        mEventHandler = new ArrayList<Handler>();
++        mMapHandler = new HashMap<LibVLC, ArrayList<Handler>>();
+     }
+ 
+     public static EventHandler getInstance() {
+@@ -110,22 +113,26 @@ public class EventHandler {
+         return mInstance;
+     }
+ 
+-    public void addHandler(Handler handler) {
+-        if (!mEventHandler.contains(handler))
+-            mEventHandler.add(handler);
++    public void addHandler(LibVLC vlcObject, Handler handler) {
++        if (!mMapHandler.containsKey(vlcObject)) {
++            mMapHandler.put(vlcObject, new ArrayList<Handler>());
++        }
++        mMapHandler.get(vlcObject).add(handler);
+     }
+ 
+-    public void removeHandler(Handler handler) {
+-        mEventHandler.remove(handler);
++    public void removeHandler(LibVLC vlcObject, Handler handler) {
++        mMapHandler.get(vlcObject).remove(handler);
+     }
+ 
+     /** This method is called by a native thread **/
+-    public void callback(int event, Bundle b) {
++    public void callback(int event, Bundle b, LibVLC vlcObject) {
++        List<Handler> eventHandlers = mMapHandler.get(vlcObject);
+         b.putInt("event", event);
+-        for (int i = 0; i < mEventHandler.size(); i++) {
++        for (int i = 0; i < eventHandlers.size(); i++) {
+             Message msg = Message.obtain();
+             msg.setData(b);
+-            mEventHandler.get(i).sendMessage(msg);
++            msg.obj = vlcObject;
++            eventHandlers.get(i).sendMessage(msg);
+         }
+     }
+ }
 diff --git a/vlc-android/src/org/videolan/libvlc/LibVLC.java b/vlc-android/src/org/videolan/libvlc/LibVLC.java
 index 790855a..a60d460 100644
 --- a/vlc-android/src/org/videolan/libvlc/LibVLC.java
@@ -424,6 +487,138 @@ index 790855a..a60d460 100644
      {
          setNativeEqualizer(mInternalMediaPlayerInstance, this.equalizer);
      }
+diff --git a/vlc-android/src/org/videolan/libvlc/MediaList.java b/vlc-android/src/org/videolan/libvlc/MediaList.java
+index 666568e..5c60236 100644
+--- a/vlc-android/src/org/videolan/libvlc/MediaList.java
++++ b/vlc-android/src/org/videolan/libvlc/MediaList.java
+@@ -105,12 +105,12 @@ public class MediaList {
+         ArrayList<String> children = new ArrayList<String>();
+         int ret = expandMedia(mLibVLC, position, children);
+         if(ret == 0) {
+-            mEventHandler.callback(EventHandler.CustomMediaListExpanding, new Bundle());
++            mEventHandler.callback(EventHandler.CustomMediaListExpanding, new Bundle(), mLibVLC);
+             this.remove(position);
+             for(String mrl : children) {
+                 this.insert(position, mrl);
+             }
+-            mEventHandler.callback(EventHandler.CustomMediaListExpandingEnd, new Bundle());
++            mEventHandler.callback(EventHandler.CustomMediaListExpandingEnd, new Bundle(), mLibVLC);
+         }
+         return ret;
+     }
+@@ -155,7 +155,7 @@ public class MediaList {
+         Bundle b = new Bundle();
+         b.putInt("index_before", startPosition);
+         b.putInt("index_after", endPosition);
+-        mEventHandler.callback(EventHandler.CustomMediaListItemMoved, b);
++        mEventHandler.callback(EventHandler.CustomMediaListItemMoved, b, mLibVLC);
+     }
+ 
+     public void remove(int position) {
+@@ -231,6 +231,6 @@ public class MediaList {
+         Bundle b = new Bundle();
+         b.putString("item_uri", uri);
+         b.putInt("item_index", position);
+-        mEventHandler.callback(event, b);
++        mEventHandler.callback(event, b, mLibVLC);
+     }
+ }
+diff --git a/vlc-android/src/org/videolan/vlc/audio/AudioService.java b/vlc-android/src/org/videolan/vlc/audio/AudioService.java
+index b57ae96..a624a96 100644
+--- a/vlc-android/src/org/videolan/vlc/audio/AudioService.java
++++ b/vlc-android/src/org/videolan/vlc/audio/AudioService.java
+@@ -1,7 +1,7 @@
+ /*****************************************************************************
+  * AudioService.java
+  *****************************************************************************
+- * Copyright © 2011-2013 VLC authors and VideoLAN
++ * Copyright �� 2011-2013 VLC authors and VideoLAN
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -618,7 +618,7 @@ public class AudioService extends Service {
+         String MRL = mLibVLC.getMediaList().getMRL(mCurrentIndex);
+         int index = mCurrentIndex;
+         mCurrentIndex = -1;
+-        mEventHandler.removeHandler(mVlcEventHandler);
++        mEventHandler.removeHandler(mLibVLC, mVlcEventHandler);
+         // Preserve playback when switching to video
+         hideNotification(false);
+ 
+@@ -817,8 +817,8 @@ public class AudioService extends Service {
+ 
+     private void stop() {
+         mLibVLC.stop();
+-        mEventHandler.removeHandler(mVlcEventHandler);
+-        mLibVLC.getMediaList().getEventHandler().removeHandler(mListEventHandler);
++        mEventHandler.removeHandler(mLibVLC, mVlcEventHandler);
++        mLibVLC.getMediaList().getEventHandler().removeHandler(mLibVLC, mListEventHandler);
+         setRemoteControlClientPlaybackState(EventHandler.MediaPlayerStopped);
+         mCurrentIndex = -1;
+         mPrevious.clear();
+@@ -1134,9 +1134,9 @@ public class AudioService extends Service {
+                 throws RemoteException {
+ 
+             Log.v(TAG, "Loading position " + ((Integer)position).toString() + " in " + mediaPathList.toString());
+-            mEventHandler.addHandler(mVlcEventHandler);
++            mEventHandler.addHandler(mLibVLC, mVlcEventHandler);
+ 
+-            mLibVLC.getMediaList().getEventHandler().removeHandler(mListEventHandler);
++            mLibVLC.getMediaList().getEventHandler().removeHandler(mLibVLC, mListEventHandler);
+             mLibVLC.setMediaList();
+             mLibVLC.getPrimaryMediaList().clear();
+             MediaList mediaList = mLibVLC.getMediaList();
+@@ -1171,7 +1171,7 @@ public class AudioService extends Service {
+             }
+ 
+             // Add handler after loading the list
+-            mLibVLC.getMediaList().getEventHandler().addHandler(mListEventHandler);
++            mLibVLC.getMediaList().getEventHandler().addHandler(mLibVLC, mListEventHandler);
+ 
+             mLibVLC.playIndex(mCurrentIndex);
+             mHandler.sendEmptyMessage(SHOW_PROGRESS);
+@@ -1202,7 +1202,7 @@ public class AudioService extends Service {
+                 mCurrentIndex = 0;
+             }
+ 
+-            mEventHandler.addHandler(mVlcEventHandler);
++            mEventHandler.addHandler(mLibVLC, mVlcEventHandler);
+             mLibVLC.playIndex(mCurrentIndex);
+             mHandler.sendEmptyMessage(SHOW_PROGRESS);
+             setUpRemoteControlClient();
+@@ -1226,7 +1226,7 @@ public class AudioService extends Service {
+ 
+             if(URI == null || !mLibVLC.isPlaying())
+                 return;
+-            mEventHandler.addHandler(mVlcEventHandler);
++            mEventHandler.addHandler(mLibVLC, mVlcEventHandler);
+             mCurrentIndex = index;
+ 
+             // Notify everyone
+diff --git a/vlc-android/src/org/videolan/vlc/gui/HistoryAdapter.java b/vlc-android/src/org/videolan/vlc/gui/HistoryAdapter.java
+index f24577c..1cd0bd8 100644
+--- a/vlc-android/src/org/videolan/vlc/gui/HistoryAdapter.java
++++ b/vlc-android/src/org/videolan/vlc/gui/HistoryAdapter.java
+@@ -1,8 +1,8 @@
+ /*****************************************************************************
+  * HistoryAdapter.java
+  *****************************************************************************
+- * Copyright © 2012-2013 VLC authors and VideoLAN
+- * Copyright © 2012-2013 Edward Wang
++ * Copyright �� 2012-2013 VLC authors and VideoLAN
++ * Copyright �� 2012-2013 Edward Wang
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -56,7 +56,7 @@ public class HistoryAdapter extends BaseAdapter {
+         }
+ 
+         EventHandler em = mLibVLC.getPrimaryMediaList().getEventHandler();
+-        em.addHandler(new HistoryEventHandler(this));
++        em.addHandler(mLibVLC, new HistoryEventHandler(this));
+     }
+ 
+     @Override
 diff --git a/vlc-android/src/org/videolan/vlc/gui/PreferencesActivity.java b/vlc-android/src/org/videolan/vlc/gui/PreferencesActivity.java
 index 9f0109c..b069452 100644
 --- a/vlc-android/src/org/videolan/vlc/gui/PreferencesActivity.java
@@ -437,3 +632,43 @@ index 9f0109c..b069452 100644
          }
      }
  
+diff --git a/vlc-android/src/org/videolan/vlc/gui/video/VideoPlayerActivity.java b/vlc-android/src/org/videolan/vlc/gui/video/VideoPlayerActivity.java
+index a27cfe1..9310d95 100644
+--- a/vlc-android/src/org/videolan/vlc/gui/video/VideoPlayerActivity.java
++++ b/vlc-android/src/org/videolan/vlc/gui/video/VideoPlayerActivity.java
+@@ -1,7 +1,7 @@
+ /*****************************************************************************
+  * VideoPlayerActivity.java
+  *****************************************************************************
+- * Copyright © 2011-2014 VLC authors and VideoLAN
++ * Copyright �� 2011-2014 VLC authors and VideoLAN
+  *
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+@@ -438,7 +438,7 @@ public class VideoPlayerActivity extends Activity implements IVideoPlayer {
+         mLibVLC.eventVideoPlayerActivityCreated(true);
+ 
+         EventHandler em = EventHandler.getInstance();
+-        em.addHandler(eventHandler);
++        em.addHandler(mLibVLC, eventHandler);
+ 
+         this.setVolumeControlStream(AudioManager.STREAM_MUSIC);
+ 
+@@ -547,7 +547,7 @@ public class VideoPlayerActivity extends Activity implements IVideoPlayer {
+         unregisterReceiver(mReceiver);
+ 
+         EventHandler em = EventHandler.getInstance();
+-        em.removeHandler(eventHandler);
++        em.removeHandler(mLibVLC, eventHandler);
+ 
+         // MediaCodec opaque direct rendering should not be used anymore since there is no surface to attach.
+         mLibVLC.eventVideoPlayerActivityCreated(false);
+@@ -1140,7 +1140,7 @@ public class VideoPlayerActivity extends Activity implements IVideoPlayer {
+ 
+     public void eventHardwareAccelerationError() {
+         EventHandler em = EventHandler.getInstance();
+-        em.callback(EventHandler.HardwareAccelerationError, new Bundle());
++        em.callback(EventHandler.HardwareAccelerationError, new Bundle(), mLibVLC);
+     }
+ 
+     private void handleHardwareAccelerationError() {
