@@ -1,7 +1,7 @@
 Android-VLC-Patches
 ===================
 
-Follow the steps in https://wiki.videolan.org/AndroidCompile to download and compile VLC for Androd.
+Follow the steps in [AndroidCompile](https://wiki.videolan.org/AndroidCompile) to download and compile VLC for Androd.
 
 After the compilation is finished apply the patches inside android-vlc folder:
 
@@ -18,12 +18,13 @@ Change to vlc folder and apply patch:
 Recompile the code:
 > ./compile.sh --build
 
+Example App:
+------------
+
+For an example application please check https://github.com/Ambigioz/multiplevlc.
+
 Note:
 =====
 
 The patches are based on android vlc commit hash 1862583d090efa98b60592b0c092936d98e48289.
 
-Example App:
-============
-
-For an example application please check https://github.com/Ambigioz/multiplevlc.
