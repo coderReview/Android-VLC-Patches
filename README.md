@@ -23,3 +23,7 @@ Note:
 
 The patches are based on android vlc commit hash 1862583d090efa98b60592b0c092936d98e48289.
 
+Example App:
+============
+
+For an example application please check https://github.com/Ambigioz/multiplevlc.
