@@ -1,5 +1,5 @@
 diff --git a/include/vlc/libvlc_media_player.h b/include/vlc/libvlc_media_player.h
-index 9ba313e..f4513c8 100644
+index 9ba313e..ae8abc0 100644
 --- a/include/vlc/libvlc_media_player.h
 +++ b/include/vlc/libvlc_media_player.h
 @@ -437,6 +437,23 @@ LIBVLC_API void libvlc_media_player_set_nsobject ( libvlc_media_player_t *p_mi,
@@ -26,6 +26,35 @@ index 9ba313e..f4513c8 100644
   * Set the agl handler where the media player should render its video output.
   *
   * \param p_mi the Media Player
+@@ -671,7 +688,7 @@ LIBVLC_API void libvlc_media_player_set_time( libvlc_media_player_t *p_mi, libvl
+ LIBVLC_API float libvlc_media_player_get_position( libvlc_media_player_t *p_mi );
+ 
+ /**
+- * Set movie position as percentage between 0.0 and 1.0. 
++ * Set movie position as percentage between 0.0 and 1.0.
+  * This has no effect if playback is not enabled.
+  * This might not work depending on the underlying input format and protocol.
+  *
+@@ -1240,6 +1257,19 @@ LIBVLC_API void libvlc_video_set_deinterlace( libvlc_media_player_t *p_mi,
+                                                   const char *psz_mode );
+ 
+ /**
++ * Set the pan and digital zoom for the video
++ *
++ * \param p_mi libvlc media player
++ * \param i_crop_top the crop to be done top
++ * \param i_crop_bottom the crop to be done bottom
++ * \param i_crop_left the crop to be done left
++ * \param i_crop_right the crop to be done right
++ */
++LIBVLC_API void libvlc_video_pan_digital_zoom( libvlc_media_player_t *p_mp,
++                                               int i_crop_top, int i_crop_bottom,
++                                               int i_crop_left, int i_crop_right);
++
++/**
+  * Get an integer marquee option value
+  *
+  * \param p_mi libvlc media player
 diff --git a/lib/media_player.c b/lib/media_player.c
 index 64240aa..6f4d87c 100644
 --- a/lib/media_player.c
@@ -76,6 +105,137 @@ index 64240aa..6f4d87c 100644
  /**************************************************************************
   * set_agl
   **************************************************************************/
+diff --git a/lib/video.c b/lib/video.c
+index 5b89fd6..f082990 100644
+--- a/lib/video.c
++++ b/lib/video.c
+@@ -252,6 +252,8 @@ void libvlc_video_set_scale( libvlc_media_player_t *p_mp, float f_scale )
+         if (isfinite(f_scale) && f_scale != 0.f)
+             var_SetFloat (p_vout, "scale", f_scale);
+         var_SetBool (p_vout, "autoscale", f_scale == 0.f);
++        vout_EnableFilter( p_vout, "scale", true, false );
++
+         vlc_object_release (p_vout);
+     }
+     free (pp_vouts);
+@@ -607,6 +609,29 @@ void libvlc_video_set_deinterlace( libvlc_media_player_t *p_mi,
+     free (pp_vouts);
+ }
+ 
++void libvlc_video_pan_digital_zoom( libvlc_media_player_t *p_mp,
++                                    int i_crop_top, int i_crop_bottom,
++                                    int i_crop_left, int i_crop_right)
++{
++    vout_thread_t *vout = GetVout( p_mp, 0 );
++
++    vout_EnableFilter( vout, "croppadd", false, false );
++
++    var_Create( p_mp, "croppadd-croptop", VLC_VAR_INTEGER | VLC_VAR_DOINHERIT);
++    var_Create( p_mp, "croppadd-cropbottom", VLC_VAR_INTEGER | VLC_VAR_DOINHERIT);
++    var_Create( p_mp, "croppadd-cropleft", VLC_VAR_INTEGER | VLC_VAR_DOINHERIT);
++    var_Create( p_mp, "croppadd-cropright", VLC_VAR_INTEGER | VLC_VAR_DOINHERIT);
++
++    var_SetInteger( p_mp, "croppadd-croptop", i_crop_top);
++    var_SetInteger( p_mp, "croppadd-cropbottom", i_crop_bottom);
++    var_SetInteger( p_mp, "croppadd-cropleft", i_crop_left);
++    var_SetInteger( p_mp, "croppadd-cropright", i_crop_right);
++
++    vout_EnableFilter( vout, "croppadd", true, false );
++
++    vlc_object_release( vout );
++}
++
+ /* ************** */
+ /* module helpers */
+ /* ************** */
+diff --git a/modules/access/live555.cpp b/modules/access/live555.cpp
+index b14898c..4442b9b 100644
+--- a/modules/access/live555.cpp
++++ b/modules/access/live555.cpp
+@@ -1217,8 +1217,9 @@ static int Play( demux_t *p_demux )
+     {
+         /* The PLAY */
+         p_sys->rtsp->sendPlayCommand( *p_sys->ms, default_live555_callback, p_sys->f_npt_start, -1, 1 );
++        const int i_timeout = var_InheritInteger( p_demux, "ipv4-timeout" );
+ 
+-        if( !wait_Live555_response(p_demux) )
++        if( !wait_Live555_response(p_demux, i_timeout) )
+         {
+             msg_Err( p_demux, "RTSP PLAY failed %s", p_sys->env->getResultMsg() );
+             return VLC_EGENERIC;
+@@ -1386,14 +1387,14 @@ static int Demux( demux_t *p_demux )
+         */
+     }
+     else if( !p_sys->b_multicast && !p_sys->b_paused &&
+-              p_sys->b_no_data && ( p_sys->i_no_data_ti > 34 ) )
++              p_sys->b_no_data && ( p_sys->i_no_data_ti > 68 ) )
+     {
+         bool b_rtsp_tcp = var_GetBool( p_demux, "rtsp-tcp" ) ||
+                                 var_GetBool( p_demux, "rtsp-http" );
+ 
+         if( !b_rtsp_tcp && p_sys->rtsp && p_sys->ms )
+         {
+-            msg_Warn( p_demux, "no data received in 10s. Switching to TCP" );
++            msg_Warn( p_demux, "no data received in 20s. Switching to TCP" );
+             if( RollOverTcp( p_demux ) )
+             {
+                 msg_Err( p_demux, "TCP rollover failed, aborting" );
+@@ -1401,14 +1402,14 @@ static int Demux( demux_t *p_demux )
+             }
+             return 1;
+         }
+-        msg_Err( p_demux, "no data received in 10s, aborting" );
++        msg_Err( p_demux, "no data received in 20s, aborting" );
+         return 0;
+     }
+     else if( !p_sys->b_multicast && !p_sys->b_paused &&
+-             ( p_sys->i_no_data_ti > 34 ) )
++             ( p_sys->i_no_data_ti > 68 ) )
+     {
+         /* EOF ? */
+-        msg_Warn( p_demux, "no data received in 10s, eof ?" );
++        msg_Warn( p_demux, "no data received in 20s, eof ?" );
+         return 0;
+     }
+     return p_sys->b_error ? 0 : 1;
+diff --git a/modules/audio_output/Makefile.am b/modules/audio_output/Makefile.am
+index 1e6a233..75c75c1 100644
+--- a/modules/audio_output/Makefile.am
++++ b/modules/audio_output/Makefile.am
+@@ -104,9 +104,9 @@ libauhal_plugin_la_LDFLAGS = $(AM_LDFLAGS) -Wl,-framework,CoreAudio,-framework,A
+ if HAVE_OSX
+ aout_LTLIBRARIES += libauhal_plugin.la
+ endif
+-libaudiounit_ios_plugin_la_SOURCES = audio_output/audiounit_ios.c \
++libaudiounit_ios_plugin_la_SOURCES = audio_output/audiounit_ios.m \
+ 	audio_output/TPCircularBuffer.h audio_output/TPCircularBuffer.c
+-libaudiounit_ios_plugin_la_LDFLAGS = $(libauhal_plugin_la_LDFLAGS)
++libaudiounit_ios_plugin_la_LDFLAGS = $(AM_LDFLAGS) -Wl,-framework,CoreAudio,-framework,AudioUnit,-framework,AudioToolbox,-framework,CoreServices,-framework,UIKit,-framework,AVFoundation -rpath '$(aoutdir)'
+ if HAVE_IOS
+ aout_LTLIBRARIES += libaudiounit_ios_plugin.la
+ endif
+diff --git a/modules/codec/avcodec/video.c b/modules/codec/avcodec/video.c
+index a542732..815fe3f 100644
+--- a/modules/codec/avcodec/video.c
++++ b/modules/codec/avcodec/video.c
+@@ -514,7 +514,7 @@ static picture_t *DecodeVideo( decoder_t *p_dec, block_t **pp_block )
+     }
+ 
+     if( !p_dec->b_pace_control && (p_sys->i_late_frames > 0) &&
+-        (mdate() - p_sys->i_late_frames_start > INT64_C(5000000)) )
++        (mdate() - p_sys->i_late_frames_start > INT64_C(60000000)) )
+     {
+         if( p_sys->i_pts > VLC_TS_INVALID )
+         {
+@@ -523,7 +523,7 @@ static picture_t *DecodeVideo( decoder_t *p_dec, block_t **pp_block )
+         if( p_block )
+             block_Release( p_block );
+         p_sys->i_late_frames--;
+-        msg_Err( p_dec, "more than 5 seconds of late video -> "
++        msg_Err( p_dec, "more than 60 seconds of late video -> "
+                  "dropping frame (computer too slow ?)" );
+         return NULL;
+     }
 diff --git a/modules/codec/omxil/android_mediacodec.c b/modules/codec/omxil/android_mediacodec.c
 index 44184c6..4ec4ec5 100644
 --- a/modules/codec/omxil/android_mediacodec.c
@@ -330,7 +490,7 @@ index d3f308e..7c90557 100644
          }
          case VOUT_WINDOW_SET_STATE:
 diff --git a/modules/video_output/android/surface.c b/modules/video_output/android/surface.c
-index 9ab2f53..88c8d28 100644
+index 9ab2f53..8d69572 100644
 --- a/modules/video_output/android/surface.c
 +++ b/modules/video_output/android/surface.c
 @@ -76,10 +76,10 @@ vlc_module_end()
@@ -456,7 +616,21 @@ index 9ab2f53..88c8d28 100644
              return VLC_EGENERIC;
          }
          info->w      = buf.width;
-@@ -411,12 +410,12 @@ static int  AndroidLockSurface(picture_t *picture)
+@@ -400,10 +399,11 @@ static int  AndroidLockSurface(picture_t *picture)
+         info->bits   = buf.bits;
+         info->s      = buf.stride;
+         info->format = buf.format;
+-    } else if (sys->s_lock)
++    } else if (sys->s_lock) {
+         sys->s_lock(surf, info, 1);
+-    else
++    } else {
+         sys->s_lock2(surf, info, NULL);
++    }
+ 
+     // For RGB (32 or 16) we need to align on 8 or 4 pixels, 16 pixels for YUV
+     int align_pixels = (16 / picture->p[0].i_pixel_pitch) - 1;
+@@ -411,12 +411,12 @@ static int  AndroidLockSurface(picture_t *picture)
  
      if (info->w != aligned_width || info->h != sh || sys->b_changed_crop) {
          // input size doesn't match the surface size -> request a resize
@@ -471,7 +645,7 @@ index 9ab2f53..88c8d28 100644
          sys->b_changed_crop = false;
          return VLC_EGENERIC;
      }
-@@ -438,7 +437,7 @@ static void AndroidUnlockSurface(picture_t *picture)
+@@ -438,7 +438,7 @@ static void AndroidUnlockSurface(picture_t *picture)
  
      if (likely(picsys->surf))
          sys->s_unlockAndPost(picsys->surf);
@@ -509,6 +683,19 @@ index e78c688..bc077ab 100644
  /* Fill the structure passed as parameter and return a library handle
     that should be destroyed with dlclose. */
  void *LoadNativeWindowAPI(native_window_api_t *native);
+diff --git a/src/input/clock.c b/src/input/clock.c
+index 1419f8f..8f4acf9 100644
+--- a/src/input/clock.c
++++ b/src/input/clock.c
+@@ -430,7 +430,7 @@ int input_clock_ConvertTS( input_clock_t *cl,
+     /* */
+     if( *pi_ts0 > VLC_TS_INVALID )
+     {
+-        *pi_ts0 = ClockStreamToSystem( cl, *pi_ts0 + AvgGet( &cl->drift ) );
++        *pi_ts0 = ClockStreamToSystem( cl, *pi_ts0 /* AvgGet( &cl->drift ) */ );
+         if( *pi_ts0 > cl->i_ts_max )
+             cl->i_ts_max = *pi_ts0;
+         *pi_ts0 += i_ts_delay;
 diff --git a/src/libvlc.c b/src/libvlc.c
 index 946ce2e..9d1bcd8 100644
 --- a/src/libvlc.c
@@ -523,3 +710,16 @@ index 946ce2e..9d1bcd8 100644
  #if defined (_WIN32) || defined (__OS2__)
      var_Create( p_libvlc, "drawable-hwnd", VLC_VAR_INTEGER );
  #endif
+diff --git a/src/video_output/video_output.c b/src/video_output/video_output.c
+index 51a32b7..8338f27 100644
+--- a/src/video_output/video_output.c
++++ b/src/video_output/video_output.c
+@@ -65,7 +65,7 @@ static void VoutDestructor(vlc_object_t *);
+ /**
+  * Late pictures having a delay higher than this value are thrashed.
+  */
+-#define VOUT_DISPLAY_LATE_THRESHOLD (INT64_C(20000))
++#define VOUT_DISPLAY_LATE_THRESHOLD (INT64_C(5000000))
+ 
+ /* Better be in advance when awakening than late... */
+ #define VOUT_MWAIT_TOLERANCE (INT64_C(4000))
