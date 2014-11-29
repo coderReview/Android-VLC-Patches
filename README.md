@@ -36,6 +36,11 @@ Example App:
 
 For an example application please check https://github.com/Ambigioz/multiplevlc.
 
+Compiled libraries:
+------------------
+
+Compiled libraries and Java source code can be found in the sdk/ folder.
+
 Note:
 =====
 
