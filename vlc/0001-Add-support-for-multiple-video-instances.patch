@@ -1,0 +1,675 @@
+From 68e4eab2b099fa713e75d7060117e522f66e87e8 Mon Sep 17 00:00:00 2001
+From: Paulo Vitor Magacho da Silva <pvmagacho@gmail.com>
+Date: Thu, 27 Nov 2014 22:29:09 -0200
+Subject: [PATCH] Add support for multiple video instances.
+
+---
+ include/vlc/libvlc_media_player.h             | 17 ++++++++
+ lib/media_player.c                            | 32 +++++++++++++++
+ modules/codec/omxil/android_mediacodec.c      | 30 +++++++++-----
+ modules/codec/omxil/omxil.c                   | 25 ++++++++----
+ modules/codec/omxil/omxil.h                   |  3 ++
+ modules/video_output/android/android_window.c | 54 +++++++++++++++++--------
+ modules/video_output/android/nativewindow.c   | 14 +++----
+ modules/video_output/android/surface.c        | 58 +++++++++++++++++++--------
+ modules/video_output/android/utils.h          | 13 ++++++
+ src/libvlc.c                                  |  3 ++
+ 10 files changed, 193 insertions(+), 56 deletions(-)
+
+diff --git a/include/vlc/libvlc_media_player.h b/include/vlc/libvlc_media_player.h
+index 1c73cf2..e3f925f 100644
+--- a/include/vlc/libvlc_media_player.h
++++ b/include/vlc/libvlc_media_player.h
+@@ -437,6 +437,23 @@ LIBVLC_API void libvlc_media_player_set_nsobject ( libvlc_media_player_t *p_mi,
+ LIBVLC_API void * libvlc_media_player_get_nsobject ( libvlc_media_player_t *p_mi );
+ 
+ /**
++ * Set the android_surface_value_t structure handler holding the Android surface information where
++ * the media player should render its video output.
++ *
++ * \param p_mi the Media Player
++ * \param object the android_surface_value_t structure to set.
++ */
++LIBVLC_API void libvlc_media_player_set_surfacevalue ( libvlc_media_player_t *p_mi, void * object );
++
++/**
++ * Gets a handler to the android_surface_value_t structure holding Android Surface object information.
++ *
++ * \param p_mi the Media Player
++ * \return the android_surface_value_t pointer or 0 if none where set
++ */
++LIBVLC_API void * libvlc_media_player_get_surfacevalue ( libvlc_media_player_t *p_mi );
++
++/**
+  * Set the agl handler where the media player should render its video output.
+  *
+  * \param p_mi the Media Player
+diff --git a/lib/media_player.c b/lib/media_player.c
+index 698f8d2..f2b388e 100644
+--- a/lib/media_player.c
++++ b/lib/media_player.c
+@@ -515,6 +515,9 @@ libvlc_media_player_new( libvlc_instance_t *instance )
+     var_Create (mp, "drawable-agl", VLC_VAR_INTEGER);
+     var_Create (mp, "drawable-nsobject", VLC_VAR_ADDRESS);
+ #endif
++#ifdef __ANDROID__
++    var_Create (mp, "drawable-surfacevalue", VLC_VAR_ADDRESS);
++#endif
+ 
+     var_Create (mp, "keyboard-events", VLC_VAR_BOOL);
+     var_SetBool (mp, "keyboard-events", true);
+@@ -1017,6 +1020,35 @@ void * libvlc_media_player_get_nsobject( libvlc_media_player_t *p_mi )
+ #endif
+ }
+ 
++
++/**************************************************************************
++ * set_surfacevalue
++ **************************************************************************/
++void libvlc_media_player_set_surfacevalue( libvlc_media_player_t *p_mi,
++                                           void * object )
++{
++    assert (p_mi != NULL);
++#ifdef __ANDROID__
++    var_SetAddress (p_mi, "drawable-surfacevalue", object);
++#else
++    (void) p_mi; (void)object;
++#endif
++}
++
++/**************************************************************************
++ * get_surfacevalue
++ **************************************************************************/
++void * libvlc_media_player_get_surfacevalue( libvlc_media_player_t *p_mi )
++{
++    assert (p_mi != NULL);
++#ifdef __ANDROID__
++    return var_GetAddress (p_mi, "drawable-surfacevalue");
++#else
++    return NULL;
++#endif
++}
++
++
+ /**************************************************************************
+  * set_agl
+  **************************************************************************/
+diff --git a/modules/codec/omxil/android_mediacodec.c b/modules/codec/omxil/android_mediacodec.c
+index 00bea88..de2ba86 100644
+--- a/modules/codec/omxil/android_mediacodec.c
++++ b/modules/codec/omxil/android_mediacodec.c
+@@ -50,13 +50,15 @@
+ 
+ #define THREAD_NAME "android_mediacodec"
+ 
++typedef struct android_surf_value_t android_surf_value_t;
++
+ extern int jni_attach_thread(JNIEnv **env, const char *thread_name);
+ extern void jni_detach_thread();
+ /* JNI functions to get/set an Android Surface object. */
+-extern jobject jni_LockAndGetAndroidJavaSurface();
+-extern void jni_UnlockAndroidSurface();
+-extern void jni_EventHardwareAccelerationError();
+-extern bool jni_IsVideoPlayerActivityCreated();
++extern jobject jni_LockAndGetAndroidJavaSurface(android_surf_value_t *object);
++extern void jni_UnlockAndroidSurface(android_surf_value_t *object);
++extern void jni_EventHardwareAccelerationError(android_surf_value_t *android_surface);
++extern bool jni_IsVideoPlayerActivityCreated(android_surf_value_t *android_surface);
+ 
+ /* Implementation of a circular buffer of timestamps with overwriting
+  * of older values. MediaCodec has only one type of timestamp, if a
+@@ -172,6 +174,8 @@ struct decoder_sys_t
+     picture_t** inflight_picture; /**< stores the inflight picture for each output buffer or NULL */
+ 
+     timestamp_fifo_t *timestamp_fifo;
++
++    android_surf_value_t *object;
+ };
+ 
+ enum Types
+@@ -325,6 +329,12 @@ static int OpenDecoder(vlc_object_t *p_this)
+     if ((p_dec->p_sys = p_sys = calloc(1, sizeof(*p_sys))) == NULL)
+         return VLC_ENOMEM;
+ 
++    p_sys->object = var_CreateGetAddress (p_dec, "drawable-surfacevalue");
++    if (!p_sys->object) {
++        msg_Warn(p_dec, "No android_surf_value_t set.");
++        return VLC_EGENERIC;
++    }
++
+     p_dec->pf_decode_video = DecodeVideo;
+ 
+     p_dec->fmt_out.i_cat = p_dec->fmt_in.i_cat;
+@@ -504,16 +514,16 @@ static int OpenDecoder(vlc_object_t *p_this)
+     /* If the VideoPlayerActivity is not started, MediaCodec opaque
+        direct rendering should be disabled since no surface will be
+        attached to the JNI. */
+-    p_sys->direct_rendering = jni_IsVideoPlayerActivityCreated() && var_InheritBool(p_dec, CFG_PREFIX "dr");
++    p_sys->direct_rendering = jni_IsVideoPlayerActivityCreated(p_sys->object) && var_InheritBool(p_dec, CFG_PREFIX "dr");
+     if (p_sys->direct_rendering) {
+-        jobject surf = jni_LockAndGetAndroidJavaSurface();
++        jobject surf = jni_LockAndGetAndroidJavaSurface(p_sys->object);
+         if (surf) {
+             // Configure MediaCodec with the Android surface.
+             (*env)->CallVoidMethod(env, p_sys->codec, p_sys->configure, format, surf, NULL, 0);
+             if ((*env)->ExceptionOccurred(env)) {
+                 msg_Warn(p_dec, "Exception occurred in MediaCodec.configure with an output surface.");
+                 (*env)->ExceptionClear(env);
+-                jni_UnlockAndroidSurface();
++                jni_UnlockAndroidSurface(p_sys->object);
+                 goto error;
+             }
+             p_dec->fmt_out.i_codec = VLC_CODEC_ANDROID_OPAQUE;
+@@ -521,7 +531,7 @@ static int OpenDecoder(vlc_object_t *p_this)
+             msg_Warn(p_dec, "Failed to get the Android Surface, disabling direct rendering.");
+             p_sys->direct_rendering = false;
+         }
+-        jni_UnlockAndroidSurface();
++        jni_UnlockAndroidSurface(p_sys->object);
+     }
+     if (!p_sys->direct_rendering) {
+         (*env)->CallVoidMethod(env, p_sys->codec, p_sys->configure, format, NULL, NULL, 0);
+@@ -576,6 +586,8 @@ static void CloseDecoder(vlc_object_t *p_this)
+     if (!p_sys)
+         return;
+ 
++    var_Destroy (p_dec, "drawable-surfacevalue");
++
+     /* Invalidate all pictures that are currently in flight in order
+      * to prevent the vout from using destroyed output buffers. */
+     if (p_sys->direct_rendering)
+@@ -885,7 +897,7 @@ static picture_t *DecodeVideo(decoder_t *p_dec, block_t **pp_block)
+         block_Release(p_block);
+         if (!p_sys->error_event_sent) {
+             /* Signal the error to the Java. */
+-            jni_EventHardwareAccelerationError();
++            jni_EventHardwareAccelerationError(p_sys->object);
+             p_sys->error_event_sent = true;
+         }
+         return NULL;
+diff --git a/modules/codec/omxil/omxil.c b/modules/codec/omxil/omxil.c
+index 03814d0..82cc6f2 100644
+--- a/modules/codec/omxil/omxil.c
++++ b/modules/codec/omxil/omxil.c
+@@ -70,9 +70,9 @@
+ #define THREAD_NAME "omxil"
+ extern int jni_attach_thread(JNIEnv **env, const char *thread_name);
+ extern void jni_detach_thread();
+-extern jobject jni_LockAndGetAndroidJavaSurface();
+-extern void jni_UnlockAndroidSurface();
+-extern bool jni_IsVideoPlayerActivityCreated();
++extern jobject jni_LockAndGetAndroidJavaSurface(android_surf_value_t *object);
++extern void jni_UnlockAndroidSurface(android_surf_value_t *object);
++extern bool jni_IsVideoPlayerActivityCreated(android_surf_value_t *android_surface);
+ #endif
+ 
+ /*****************************************************************************
+@@ -1056,6 +1056,15 @@ static int OpenGeneric( vlc_object_t *p_this, bool b_encode )
+         return VLC_ENOMEM;
+     }
+ 
++#if defined(USE_IOMX)
++    p_sys->object = var_CreateGetAddress (p_dec, "drawable-surfacevalue");
++    if (!p_sys->object) {
++        msg_Warn(p_dec, "No android_surf_value_t set.");
++        DeinitOmxCore();
++        return VLC_EGENERIC;
++    }
++#endif
++
+     /* Initialise the thread properties */
+     if(!b_encode)
+     {
+@@ -1078,7 +1087,7 @@ static int OpenGeneric( vlc_object_t *p_this, bool b_encode )
+     p_sys->in.p_fmt = &p_dec->fmt_in;
+     OMX_FIFO_INIT (&p_sys->out.fifo, pInputPortPrivate );
+ #if defined(USE_IOMX)
+-    p_sys->out.b_direct = jni_IsVideoPlayerActivityCreated() && var_InheritBool(p_dec, CFG_PREFIX "dr");
++    p_sys->out.b_direct = jni_IsVideoPlayerActivityCreated(p_sys->object) && var_InheritBool(p_dec, CFG_PREFIX "dr");
+ #else
+     p_sys->out.b_direct = false;
+ #endif
+@@ -1913,6 +1922,8 @@ static void CloseGeneric( vlc_object_t *p_this )
+     OMX_FIFO_DESTROY( &p_sys->in.fifo );
+     OMX_FIFO_DESTROY( &p_sys->out.fifo );
+ 
++    var_Destroy (p_dec, "drawable-surfacevalue");
++
+     free( p_sys );
+ }
+ 
+@@ -2089,9 +2100,9 @@ static void HwBuffer_Init( decoder_t *p_dec, OmxPort *p_port )
+         goto error;
+     }
+ 
+-    surf = jni_LockAndGetAndroidJavaSurface();
++    surf = jni_LockAndGetAndroidJavaSurface(p_dec->p_sys->object);
+     if( !surf ) {
+-        jni_UnlockAndroidSurface();
++        jni_UnlockAndroidSurface(p_dec->p_sys->object);
+         msg_Warn( p_dec, "jni_LockAndGetAndroidJavaSurface failed" );
+         goto error;
+     }
+@@ -2100,7 +2111,7 @@ static void HwBuffer_Init( decoder_t *p_dec, OmxPort *p_port )
+     p_port->p_hwbuf->window = p_port->p_hwbuf->native_window.winFromSurface( p_env, surf );
+     jni_detach_thread();
+ 
+-    jni_UnlockAndroidSurface();
++    jni_UnlockAndroidSurface(p_dec->p_sys->object);
+     if( !p_port->p_hwbuf->window ) {
+         msg_Warn( p_dec, "winFromSurface failed" );
+         goto error;
+diff --git a/modules/codec/omxil/omxil.h b/modules/codec/omxil/omxil.h
+index 911f5f6..02279a3 100644
+--- a/modules/codec/omxil/omxil.h
++++ b/modules/codec/omxil/omxil.h
+@@ -138,4 +138,7 @@ struct decoder_sys_t
+     size_t i_nal_size_length; /* Length of the NAL size field for H264 */
+     int b_use_pts;
+ 
++#if defined(USE_IOMX)
++    android_surf_value_t *object;
++#endif
+ };
+diff --git a/modules/video_output/android/android_window.c b/modules/video_output/android/android_window.c
+index b08e00f..7090740 100644
+--- a/modules/video_output/android/android_window.c
++++ b/modules/video_output/android/android_window.c
+@@ -70,13 +70,12 @@ vlc_module_end()
+ extern int jni_attach_thread(JNIEnv **env, const char *thread_name);
+ extern void jni_detach_thread();
+ 
+-extern jobject jni_LockAndGetAndroidJavaSurface();
++extern jobject jni_LockAndGetAndroidJavaSurface(android_surf_value_t *object);
++extern void  jni_UnlockAndroidSurface(android_surf_value_t *object);
+ extern jobject jni_LockAndGetSubtitlesSurface();
+-extern void  jni_UnlockAndroidSurface();
+-
+-extern void  jni_SetSurfaceLayout(int width, int height, int visible_width, int visible_height, int sar_num, int sar_den);
+-extern int jni_ConfigureSurface(jobject jsurf, int width, int height, int hal, bool *configured);
+-extern int jni_GetWindowSize(int *width, int *height);
++extern void  jni_SetSurfaceLayout(android_surf_value_t *object, int width, int height, int visible_width, int visible_height, int sar_num, int sar_den);
++extern int jni_ConfigureSurface(android_surf_value_t *object, int width, int height, int hal, bool *configured);
++extern int jni_GetWindowSize(android_surf_value_t *object, int *width, int *height);
+ 
+ static const vlc_fourcc_t subpicture_chromas[] =
+ {
+@@ -136,9 +135,11 @@ struct vout_display_sys_t
+     bool b_has_subpictures;
+ 
+     uint8_t hash[16];
++
++    android_surf_value_t *object;
+ };
+ 
+-static int UpdateWindowSize(video_format_t *p_fmt, bool b_cropped)
++static int UpdateWindowSize(vout_display_sys_t *sys, video_format_t *p_fmt, bool b_cropped)
+ {
+     unsigned int i_width, i_height;
+     unsigned int i_sar_num = 1, i_sar_den = 1;
+@@ -158,7 +159,8 @@ static int UpdateWindowSize(video_format_t *p_fmt, bool b_cropped)
+         i_height = rot_fmt.i_height;
+     }
+ 
+-    jni_SetSurfaceLayout(i_width, i_height,
++    jni_SetSurfaceLayout(sys->object,
++                         i_width, i_height,
+                          rot_fmt.i_visible_width,
+                          rot_fmt.i_visible_height,
+                          i_sar_num,
+@@ -436,7 +438,7 @@ static int AndroidWindow_ConfigureSurface(vout_display_sys_t *sys,
+      * if jni_ConfigureSurface succeed, you need to get a new surface handle.
+      * That's why AndroidWindow_SetSurface is called again here.
+      */
+-    err = jni_ConfigureSurface(p_window->jsurf,
++    err = jni_ConfigureSurface(sys->object,
+                                p_window->fmt.i_width,
+                                p_window->fmt.i_height,
+                                p_window->i_android_hal,
+@@ -561,9 +563,9 @@ static int AndroidWindow_LockPicture(vout_display_sys_t *sys,
+ static int SetupWindowSurface(vout_display_sys_t *sys, unsigned i_pic_count)
+ {
+     int err;
+-    jobject jsurf = jni_LockAndGetAndroidJavaSurface();
++    jobject jsurf = jni_LockAndGetAndroidJavaSurface(sys->object);
+     err = AndroidWindow_SetSurface(sys, sys->p_window, jsurf);
+-    jni_UnlockAndroidSurface();
++    jni_UnlockAndroidSurface(sys->object);
+     err = err == 0 ? AndroidWindow_Setup(sys, sys->p_window, i_pic_count) : err;
+     return err;
+ }
+@@ -571,9 +573,9 @@ static int SetupWindowSurface(vout_display_sys_t *sys, unsigned i_pic_count)
+ static int SetupWindowSubtitleSurface(vout_display_sys_t *sys)
+ {
+     int err;
+-    jobject jsurf = jni_LockAndGetSubtitlesSurface();
++    jobject jsurf = jni_LockAndGetSubtitlesSurface(sys->object);
+     err = AndroidWindow_SetSurface(sys, sys->p_sub_window, jsurf);
+-    jni_UnlockAndroidSurface();
++    jni_UnlockAndroidSurface(sys->object);
+     err = err == 0 ? AndroidWindow_Setup(sys, sys->p_sub_window, 1) : err;
+     return err;
+ }
+@@ -601,7 +603,7 @@ static void SendEventDisplaySize(vout_display_t *vd)
+     vout_display_sys_t *sys = vd->sys;
+     int i_display_width, i_display_height;
+ 
+-    if (jni_GetWindowSize(&i_display_width, &i_display_height) == 0
++    if (jni_GetWindowSize(sys->object, &i_display_width, &i_display_height) == 0
+         && i_display_width != 0 && i_display_height != 0
+         && (i_display_width != sys->i_display_width
+          || i_display_height != sys->i_display_height))
+@@ -623,6 +625,12 @@ static int Open(vlc_object_t *p_this)
+     if (!sys)
+         return VLC_ENOMEM;
+ 
++    sys->object = var_CreateGetAddress (vd, "drawable-surfacevalue");
++    if (!sys->object) {
++        msg_Err(vd, "No android_surf_value_t set.");
++        goto error;
++    }
++
+     sys->p_library = LoadNativeWindowAPI(&sys->anw);
+     if (!sys->p_library) {
+         msg_Err(vd, "Could not initialize NativeWindow API.");
+@@ -715,6 +723,8 @@ static void Close(vlc_object_t *p_this)
+     vout_display_t *vd = (vout_display_t *)p_this;
+     vout_display_sys_t *sys = vd->sys;
+ 
++    var_Destroy (vd, "drawable-surfacevalue");
++
+     if (!sys)
+         return;
+ 
+@@ -791,7 +801,7 @@ static picture_pool_t *PoolAlloc(vout_display_t *vd, unsigned requested_count)
+     requested_count = sys->p_window->i_pic_count;
+     msg_Dbg(vd, "PoolAlloc: got %d frames", requested_count);
+ 
+-    UpdateWindowSize(&sys->p_window->fmt, sys->p_window->b_use_priv);
++    UpdateWindowSize(sys, &sys->p_window->fmt, sys->p_window->b_use_priv);
+ 
+     pp_pics = calloc(requested_count, sizeof(picture_t));
+ 
+@@ -954,6 +964,11 @@ static picture_pool_t *Pool(vout_display_t *vd, unsigned requested_count)
+ {
+     vout_display_sys_t *sys = vd->sys;
+ 
++    if (sys->object->vout_android_java_surf == NULL && sys->pool != NULL) {
++        picture_pool_Release(sys->pool);
++        sys->pool = NULL;
++    }
++
+     if (sys->pool == NULL)
+         sys->pool = PoolAlloc(vd, requested_count);
+     return sys->pool;
+@@ -968,7 +983,7 @@ static void Prepare(vout_display_t *vd, picture_t *picture,
+     SendEventDisplaySize(vd);
+ 
+     if (subpicture) {
+-        if (sys->b_sub_invalid) {
++         if (sys->b_sub_invalid) {
+             sys->b_sub_invalid = false;
+             if (sys->p_sub_pic) {
+                 picture_Release(sys->p_sub_pic);
+@@ -982,6 +997,11 @@ static void Prepare(vout_display_t *vd, picture_t *picture,
+             sys->p_sub_buffer_bounds = NULL;
+         }
+ 
++        if (sys->object->vout_android_subtitles_surf == NULL && sys->p_sub_pic != NULL) {
++            picture_Release(sys->p_sub_pic);
++            sys->p_sub_pic = NULL;
++        }
++
+         if (!sys->p_sub_pic && SetupWindowSubtitleSurface(sys) == 0)
+             sys->p_sub_pic = PictureAlloc(sys, &sys->p_sub_window->fmt);
+         if (!sys->p_spu_blend)
+@@ -1070,7 +1090,7 @@ static int Control(vout_display_t *vd, int query, va_list args)
+             } else
+                 CopySourceAspect(&sys->p_window->fmt, source);
+ 
+-            UpdateWindowSize(&sys->p_window->fmt, sys->p_window->b_use_priv);
++            UpdateWindowSize(sys, &sys->p_window->fmt, sys->p_window->b_use_priv);
+         } else {
+             const vout_display_cfg_t *cfg;
+ 
+diff --git a/modules/video_output/android/nativewindow.c b/modules/video_output/android/nativewindow.c
+index 98c03fa..584bdec 100644
+--- a/modules/video_output/android/nativewindow.c
++++ b/modules/video_output/android/nativewindow.c
+@@ -40,9 +40,9 @@
+ #define THREAD_NAME "ANativeWindow"
+ extern int jni_attach_thread(JNIEnv **env, const char *thread_name);
+ extern void jni_detach_thread();
+-extern jobject jni_LockAndGetAndroidJavaSurface();
+-extern void jni_UnlockAndroidSurface();
+-extern void  jni_SetSurfaceLayout(int width, int height, int visible_width, int visible_height, int sar_num, int sar_den);
++extern jobject jni_LockAndGetAndroidJavaSurface(android_surf_value_t *object);
++extern void jni_UnlockAndroidSurface(android_surf_value_t *object);
++extern void  jni_SetSurfaceLayout(android_surf_value_t *object, int width, int height, int visible_width, int visible_height, int sar_num, int sar_den);
+ 
+ static int Open(vout_window_t *, const vout_window_cfg_t *);
+ static void Close(vout_window_t *);
+@@ -90,7 +90,7 @@ static int Open(vout_window_t *wnd, const vout_window_cfg_t *cfg)
+     }
+ 
+     // Create the native window by first getting the Java surface.
+-    jobject javaSurface = jni_LockAndGetAndroidJavaSurface();
++    jobject javaSurface = jni_LockAndGetAndroidJavaSurface(NULL);
+     if (javaSurface == NULL)
+         goto error;
+ 
+@@ -99,7 +99,7 @@ static int Open(vout_window_t *wnd, const vout_window_cfg_t *cfg)
+     p_sys->window = p_sys->native_window.winFromSurface(p_env, javaSurface); // ANativeWindow_fromSurface call.
+     jni_detach_thread();
+ 
+-    jni_UnlockAndroidSurface();
++    jni_UnlockAndroidSurface(NULL);
+ 
+     if (p_sys->window == NULL)
+         goto error;
+@@ -110,7 +110,7 @@ static int Open(vout_window_t *wnd, const vout_window_cfg_t *cfg)
+     wnd->sys = p_sys;
+ 
+     // Set the Java surface size.
+-    jni_SetSurfaceLayout(cfg->width, cfg->height, cfg->width, cfg->height, 1, 1);
++    jni_SetSurfaceLayout(NULL, cfg->width, cfg->height, cfg->width, cfg->height, 1, 1);
+ 
+     return VLC_SUCCESS;
+ 
+@@ -144,7 +144,7 @@ static int Control(vout_window_t *wnd, int cmd, va_list ap)
+         {
+             unsigned width = va_arg(ap, unsigned);
+             unsigned height = va_arg(ap, unsigned);
+-            jni_SetSurfaceLayout(width, height, width, height, 1, 1);
++            jni_SetSurfaceLayout(NULL, width, height, width, height, 1, 1);
+             break;
+         }
+         case VOUT_WINDOW_SET_STATE:
+diff --git a/modules/video_output/android/surface.c b/modules/video_output/android/surface.c
+index ce1f922..bd7e9bf 100644
+--- a/modules/video_output/android/surface.c
++++ b/modules/video_output/android/surface.c
+@@ -76,11 +76,12 @@ vlc_module_end()
+ #define THREAD_NAME "AndroidSurface"
+ extern int jni_attach_thread(JNIEnv **env, const char *thread_name);
+ extern void jni_detach_thread();
+-extern jobject jni_LockAndGetAndroidJavaSurface();
+-extern void  jni_UnlockAndroidSurface();
+-extern void *jni_AndroidJavaSurfaceToNativeSurface(jobject *surf);
+-extern void  jni_SetSurfaceLayout(int width, int height, int visible_width, int visible_height, int sar_num, int sar_den);
+-extern int jni_ConfigureSurface(jobject jsurf, int width, int height, int hal, bool *configured);
++extern jobject jni_LockAndGetAndroidJavaSurface(android_surf_value_t *object);
++extern void  jni_LockAndroidSurface(android_surf_value_t *android_surface);
++extern void  jni_UnlockAndroidSurface(android_surf_value_t *object);
++extern void *jni_AndroidJavaSurfaceToNativeSurface(jobject surf);
++extern void  jni_SetSurfaceLayout(android_surf_value_t *object, int width, int height, int visible_width, int visible_height, int sar_num, int sar_den);
++extern int jni_ConfigureSurface(android_surf_value_t *object, int width, int height, int hal, bool *configured);
+ 
+ // _ZN7android7Surface4lockEPNS0_11SurfaceInfoEb
+ typedef void (*Surface_lock)(void *, void *, int);
+@@ -124,6 +125,8 @@ struct vout_display_sys_t {
+     unsigned int i_alloc_height;
+ 
+     video_format_t fmt;
++
++    android_surf_value_t *object;
+ };
+ 
+ struct picture_sys_t {
+@@ -186,7 +189,8 @@ static void UpdateLayout(vout_display_sys_t *sys)
+         i_height = sys->fmt.i_height;
+     }
+ 
+-    jni_SetSurfaceLayout(i_width, i_height,
++    jni_SetSurfaceLayout(sys->object,
++                         i_width, i_height,
+                          sys->fmt.i_visible_width,
+                          sys->fmt.i_visible_height,
+                          i_sar_num,
+@@ -209,6 +213,13 @@ static int Open(vlc_object_t *p_this)
+     if (!sys)
+         goto error;
+ 
++    sys->object = var_CreateGetAddress (vd, "drawable-surfacevalue");
++    if (!sys->object) {
++        free(sys);
++        msg_Err(vd, "No android_surf_value_t set.");
++        return VLC_EGENERIC;
++    }
++
+     /* */
+     sys->p_library = InitLibrary(sys);
+     if (!sys->p_library) {
+@@ -304,6 +315,8 @@ static void Close(vlc_object_t *p_this)
+     vout_display_t *vd = (vout_display_t *)p_this;
+     vout_display_sys_t *sys = vd->sys;
+ 
++    var_Destroy (vd, "drawable-surfacevalue");
++
+     if (sys) {
+         if (sys->pool)
+             picture_pool_Release(sys->pool);
+@@ -328,13 +341,11 @@ static int  AndroidLockSurface(picture_t *picture)
+     uint32_t sw, sh;
+ 
+     if (!sys->native_surface) {
+-        picsys->surf = jni_LockAndGetAndroidJavaSurface();
+-        if (unlikely(!picsys->surf)) {
+-            jni_UnlockAndroidSurface();
+-            return VLC_EGENERIC;
+-        }
++        picsys->surf = jni_LockAndGetAndroidJavaSurface(sys->object);
++        if (unlikely(!picsys->surf))
++            goto error;
+         sys->native_surface = jni_AndroidJavaSurfaceToNativeSurface(picsys->surf);
+-        jni_UnlockAndroidSurface();
++        jni_UnlockAndroidSurface(sys->object);
+ 
+         if (!sys->native_surface)
+             return VLC_EGENERIC;
+@@ -348,7 +359,7 @@ static int  AndroidLockSurface(picture_t *picture)
+ 
+     if (aligned_width != sys->i_alloc_width || sh != sys->i_alloc_height) {
+         bool configured;
+-        if (jni_ConfigureSurface(picsys->surf,
++        if (jni_ConfigureSurface(sys->object,
+                                  aligned_width,
+                                  sh,
+                                  sys->i_android_hal,
+@@ -361,21 +372,33 @@ static int  AndroidLockSurface(picture_t *picture)
+         UpdateLayout(sys);
+     }
+ 
++    jni_LockAndroidSurface(sys->object);
++    if (sys->object->vout_android_java_surf == NULL) {
++        sys->native_surface = NULL;
++        goto error;
++    }
++
+     if (sys->s_lock)
+         sys->s_lock(sys->native_surface, info, 1);
+     else
+         sys->s_lock2(sys->native_surface, info, NULL);
+ 
+     if (info->w != sys->i_alloc_width || info->h != sh) {
+-        sys->s_unlockAndPost(sys->native_surface);
+-        return VLC_EGENERIC;
++        if (sys->native_surface)
++            sys->s_unlockAndPost(sys->native_surface);
++        goto error;
+     }
+ 
+     picture->p[0].p_pixels = (uint8_t*)info->bits;
+     picture->p[0].i_lines = info->h;
+     picture->p[0].i_pitch = picture->p[0].i_pixel_pitch * info->s;
+ 
++    jni_UnlockAndroidSurface(sys->object);
+     return VLC_SUCCESS;
++
++error:
++    jni_UnlockAndroidSurface(sys->object);
++    return VLC_EGENERIC;
+ }
+ 
+ static void AndroidUnlockSurface(picture_t *picture)
+@@ -383,8 +406,11 @@ static void AndroidUnlockSurface(picture_t *picture)
+     picture_sys_t *picsys = picture->p_sys;
+     vout_display_sys_t *sys = picsys->sys;
+ 
+-    if (sys->native_surface)
++    jni_LockAndroidSurface(sys->object);
++    if (sys->native_surface && sys->object->vout_android_java_surf) {
+         sys->s_unlockAndPost(sys->native_surface);
++    }
++    jni_UnlockAndroidSurface(sys->object);
+ }
+ 
+ static void Display(vout_display_t *vd, picture_t *picture, subpicture_t *subpicture)
+diff --git a/modules/video_output/android/utils.h b/modules/video_output/android/utils.h
+index 96d4f86..8a7f7a8 100644
+--- a/modules/video_output/android/utils.h
++++ b/modules/video_output/android/utils.h
+@@ -24,6 +24,7 @@
+ # include "config.h"
+ #endif
+ 
++#include <pthread.h>
+ #include <android/native_window.h>
+ #include <jni.h>
+ #include <android/native_window_jni.h>
+@@ -46,6 +47,18 @@ typedef struct
+     ptr_ANativeWindow_setBuffersGeometry setBuffersGeometry;
+ } native_window_api_t;
+ 
++typedef struct android_surf_value_t {
++    pthread_mutex_t   vout_android_lock;
++    pthread_cond_t    vout_android_surf_attached;
++    void             *vout_android_gui;
++    void             *vout_android_libvlc;
++    jobject           vout_android_java_surf;
++    jobject           vout_android_subtitles_surf;
++    bool              vout_video_player_activity_created;
++    int               i_window_width;
++    int               i_window_height;
++} android_surf_value_t;
++
+ /* Fill the structure passed as parameter and return a library handle
+    that should be destroyed with dlclose. */
+ void *LoadNativeWindowAPI(native_window_api_t *native);
+diff --git a/src/libvlc.c b/src/libvlc.c
+index 946ce2e..9d1bcd8 100644
+--- a/src/libvlc.c
++++ b/src/libvlc.c
+@@ -485,6 +485,9 @@ dbus_out:
+     var_Create( p_libvlc, "drawable-clip-right", VLC_VAR_INTEGER );
+     var_Create( p_libvlc, "drawable-nsobject", VLC_VAR_ADDRESS );
+ #endif
++#ifdef __ANDROID__
++    var_Create( p_libvlc, "drawable-vlcobject", VLC_VAR_ADDRESS);
++#endif
+ #if defined (_WIN32) || defined (__OS2__)
+     var_Create( p_libvlc, "drawable-hwnd", VLC_VAR_INTEGER );
+ #endif
+-- 
+1.9.3 (Apple Git-50)
+

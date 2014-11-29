@@ -1,0 +1,27 @@
+From 87f6189811a8ea6d2e126d37b9175e15dd74378f Mon Sep 17 00:00:00 2001
+From: Paulo Vitor Magacho da Silva <pvmagacho@gmail.com>
+Date: Thu, 27 Nov 2014 22:17:46 -0200
+Subject: [PATCH 1/2] Fix issue with jni_ConfigureSurface return value. Only
+ check for configure flag if return is equal to 0. Return value of -1 is
+ ignored.
+
+---
+ modules/video_output/android/surface.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/modules/video_output/android/surface.c b/modules/video_output/android/surface.c
+index bd10618..ce1f922 100644
+--- a/modules/video_output/android/surface.c
++++ b/modules/video_output/android/surface.c
+@@ -352,7 +352,7 @@ static int  AndroidLockSurface(picture_t *picture)
+                                  aligned_width,
+                                  sh,
+                                  sys->i_android_hal,
+-                                 &configured) == -1 || !configured) {
++                                 &configured) == 0 && !configured) {
+             return VLC_EGENERIC;
+         }
+         sys->i_alloc_width = aligned_width;
+-- 
+1.9.3 (Apple Git-50)
+
