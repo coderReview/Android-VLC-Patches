@@ -1,4 +1,4 @@
-From 68e4eab2b099fa713e75d7060117e522f66e87e8 Mon Sep 17 00:00:00 2001
+From 00b8e7d9462d05419a11f28aa950da5d1406a32a Mon Sep 17 00:00:00 2001
 From: Paulo Vitor Magacho da Silva <pvmagacho@gmail.com>
 Date: Thu, 27 Nov 2014 22:29:09 -0200
 Subject: [PATCH] Add support for multiple video instances.
@@ -6,18 +6,18 @@ Subject: [PATCH] Add support for multiple video instances.
 ---
  include/vlc/libvlc_media_player.h             | 17 ++++++++
  lib/media_player.c                            | 32 +++++++++++++++
- modules/codec/omxil/android_mediacodec.c      | 30 +++++++++-----
+ modules/codec/omxil/android_mediacodec.c      | 30 ++++++++++----
  modules/codec/omxil/omxil.c                   | 25 ++++++++----
  modules/codec/omxil/omxil.h                   |  3 ++
- modules/video_output/android/android_window.c | 54 +++++++++++++++++--------
+ modules/video_output/android/android_window.c | 54 ++++++++++++++++--------
  modules/video_output/android/nativewindow.c   | 14 +++----
- modules/video_output/android/surface.c        | 58 +++++++++++++++++++--------
- modules/video_output/android/utils.h          | 13 ++++++
+ modules/video_output/android/surface.c        | 59 +++++++++++++++++++--------
+ modules/video_output/android/utils.h          | 12 ++++++
  src/libvlc.c                                  |  3 ++
  10 files changed, 193 insertions(+), 56 deletions(-)
 
 diff --git a/include/vlc/libvlc_media_player.h b/include/vlc/libvlc_media_player.h
-index 1c73cf2..e3f925f 100644
+index 1c73cf2..457bb8c 100644
 --- a/include/vlc/libvlc_media_player.h
 +++ b/include/vlc/libvlc_media_player.h
 @@ -437,6 +437,23 @@ LIBVLC_API void libvlc_media_player_set_nsobject ( libvlc_media_player_t *p_mi,
@@ -30,7 +30,7 @@ index 1c73cf2..e3f925f 100644
 + * \param p_mi the Media Player
 + * \param object the android_surface_value_t structure to set.
 + */
-+LIBVLC_API void libvlc_media_player_set_surfacevalue ( libvlc_media_player_t *p_mi, void * object );
++LIBVLC_API void libvlc_media_player_set_androidobject ( libvlc_media_player_t *p_mi, void * object );
 +
 +/**
 + * Gets a handler to the android_surface_value_t structure holding Android Surface object information.
@@ -38,14 +38,14 @@ index 1c73cf2..e3f925f 100644
 + * \param p_mi the Media Player
 + * \return the android_surface_value_t pointer or 0 if none where set
 + */
-+LIBVLC_API void * libvlc_media_player_get_surfacevalue ( libvlc_media_player_t *p_mi );
++LIBVLC_API void * libvlc_media_player_get_androidobject ( libvlc_media_player_t *p_mi );
 +
 +/**
   * Set the agl handler where the media player should render its video output.
   *
   * \param p_mi the Media Player
 diff --git a/lib/media_player.c b/lib/media_player.c
-index 698f8d2..f2b388e 100644
+index 698f8d2..ecf5871 100644
 --- a/lib/media_player.c
 +++ b/lib/media_player.c
 @@ -515,6 +515,9 @@ libvlc_media_player_new( libvlc_instance_t *instance )
@@ -53,7 +53,7 @@ index 698f8d2..f2b388e 100644
      var_Create (mp, "drawable-nsobject", VLC_VAR_ADDRESS);
  #endif
 +#ifdef __ANDROID__
-+    var_Create (mp, "drawable-surfacevalue", VLC_VAR_ADDRESS);
++    var_Create (mp, "drawable-androidobject", VLC_VAR_ADDRESS);
 +#endif
  
      var_Create (mp, "keyboard-events", VLC_VAR_BOOL);
@@ -66,12 +66,12 @@ index 698f8d2..f2b388e 100644
 +/**************************************************************************
 + * set_surfacevalue
 + **************************************************************************/
-+void libvlc_media_player_set_surfacevalue( libvlc_media_player_t *p_mi,
-+                                           void * object )
++void libvlc_media_player_set_androidobject( libvlc_media_player_t *p_mi,
++                                            void * object )
 +{
 +    assert (p_mi != NULL);
 +#ifdef __ANDROID__
-+    var_SetAddress (p_mi, "drawable-surfacevalue", object);
++    var_SetAddress (p_mi, "drawable-androidobject", object);
 +#else
 +    (void) p_mi; (void)object;
 +#endif
@@ -80,11 +80,11 @@ index 698f8d2..f2b388e 100644
 +/**************************************************************************
 + * get_surfacevalue
 + **************************************************************************/
-+void * libvlc_media_player_get_surfacevalue( libvlc_media_player_t *p_mi )
++void * libvlc_media_player_get_androidobject( libvlc_media_player_t *p_mi )
 +{
 +    assert (p_mi != NULL);
 +#ifdef __ANDROID__
-+    return var_GetAddress (p_mi, "drawable-surfacevalue");
++    return var_GetAddress (p_mi, "drawable-androidobject");
 +#else
 +    return NULL;
 +#endif
@@ -95,7 +95,7 @@ index 698f8d2..f2b388e 100644
   * set_agl
   **************************************************************************/
 diff --git a/modules/codec/omxil/android_mediacodec.c b/modules/codec/omxil/android_mediacodec.c
-index 00bea88..de2ba86 100644
+index 00bea88..56d6838 100644
 --- a/modules/codec/omxil/android_mediacodec.c
 +++ b/modules/codec/omxil/android_mediacodec.c
 @@ -50,13 +50,15 @@
@@ -131,7 +131,7 @@ index 00bea88..de2ba86 100644
      if ((p_dec->p_sys = p_sys = calloc(1, sizeof(*p_sys))) == NULL)
          return VLC_ENOMEM;
  
-+    p_sys->object = var_CreateGetAddress (p_dec, "drawable-surfacevalue");
++    p_sys->object = var_CreateGetAddress (p_dec, "drawable-androidobject");
 +    if (!p_sys->object) {
 +        msg_Warn(p_dec, "No android_surf_value_t set.");
 +        return VLC_EGENERIC;
@@ -173,7 +173,7 @@ index 00bea88..de2ba86 100644
      if (!p_sys)
          return;
  
-+    var_Destroy (p_dec, "drawable-surfacevalue");
++    var_Destroy (p_dec, "drawable-androidobject");
 +
      /* Invalidate all pictures that are currently in flight in order
       * to prevent the vout from using destroyed output buffers. */
@@ -188,7 +188,7 @@ index 00bea88..de2ba86 100644
          }
          return NULL;
 diff --git a/modules/codec/omxil/omxil.c b/modules/codec/omxil/omxil.c
-index 03814d0..82cc6f2 100644
+index 03814d0..a54239d 100644
 --- a/modules/codec/omxil/omxil.c
 +++ b/modules/codec/omxil/omxil.c
 @@ -70,9 +70,9 @@
@@ -209,7 +209,7 @@ index 03814d0..82cc6f2 100644
      }
  
 +#if defined(USE_IOMX)
-+    p_sys->object = var_CreateGetAddress (p_dec, "drawable-surfacevalue");
++    p_sys->object = var_CreateGetAddress (p_dec, "drawable-androidobject");
 +    if (!p_sys->object) {
 +        msg_Warn(p_dec, "No android_surf_value_t set.");
 +        DeinitOmxCore();
@@ -233,7 +233,7 @@ index 03814d0..82cc6f2 100644
      OMX_FIFO_DESTROY( &p_sys->in.fifo );
      OMX_FIFO_DESTROY( &p_sys->out.fifo );
  
-+    var_Destroy (p_dec, "drawable-surfacevalue");
++    var_Destroy (p_dec, "drawable-androidobject");
 +
      free( p_sys );
  }
@@ -272,7 +272,7 @@ index 911f5f6..02279a3 100644
 +#endif
  };
 diff --git a/modules/video_output/android/android_window.c b/modules/video_output/android/android_window.c
-index b08e00f..7090740 100644
+index b08e00f..6ab8d0d 100644
 --- a/modules/video_output/android/android_window.c
 +++ b/modules/video_output/android/android_window.c
 @@ -70,13 +70,12 @@ vlc_module_end()
@@ -363,7 +363,7 @@ index b08e00f..7090740 100644
      if (!sys)
          return VLC_ENOMEM;
  
-+    sys->object = var_CreateGetAddress (vd, "drawable-surfacevalue");
++    sys->object = var_CreateGetAddress (vd, "drawable-androidobject");
 +    if (!sys->object) {
 +        msg_Err(vd, "No android_surf_value_t set.");
 +        goto error;
@@ -376,7 +376,7 @@ index b08e00f..7090740 100644
      vout_display_t *vd = (vout_display_t *)p_this;
      vout_display_sys_t *sys = vd->sys;
  
-+    var_Destroy (vd, "drawable-surfacevalue");
++    var_Destroy (vd, "drawable-androidobject");
 +
      if (!sys)
          return;
@@ -486,7 +486,7 @@ index 98c03fa..584bdec 100644
          }
          case VOUT_WINDOW_SET_STATE:
 diff --git a/modules/video_output/android/surface.c b/modules/video_output/android/surface.c
-index ce1f922..bd7e9bf 100644
+index ce1f922..61c9b02 100644
 --- a/modules/video_output/android/surface.c
 +++ b/modules/video_output/android/surface.c
 @@ -76,11 +76,12 @@ vlc_module_end()
@@ -530,7 +530,7 @@ index ce1f922..bd7e9bf 100644
      if (!sys)
          goto error;
  
-+    sys->object = var_CreateGetAddress (vd, "drawable-surfacevalue");
++    sys->object = var_CreateGetAddress (vd, "drawable-androidobject");
 +    if (!sys->object) {
 +        free(sys);
 +        msg_Err(vd, "No android_surf_value_t set.");
@@ -544,7 +544,7 @@ index ce1f922..bd7e9bf 100644
      vout_display_t *vd = (vout_display_t *)p_this;
      vout_display_sys_t *sys = vd->sys;
  
-+    var_Destroy (vd, "drawable-surfacevalue");
++    var_Destroy (vd, "drawable-androidobject");
 +
      if (sys) {
          if (sys->pool)
@@ -576,7 +576,7 @@ index ce1f922..bd7e9bf 100644
                                   aligned_width,
                                   sh,
                                   sys->i_android_hal,
-@@ -361,21 +372,33 @@ static int  AndroidLockSurface(picture_t *picture)
+@@ -361,21 +372,34 @@ static int  AndroidLockSurface(picture_t *picture)
          UpdateLayout(sys);
      }
  
@@ -604,6 +604,7 @@ index ce1f922..bd7e9bf 100644
      picture->p[0].i_pitch = picture->p[0].i_pixel_pitch * info->s;
  
 +    jni_UnlockAndroidSurface(sys->object);
++
      return VLC_SUCCESS;
 +
 +error:
@@ -612,7 +613,7 @@ index ce1f922..bd7e9bf 100644
  }
  
  static void AndroidUnlockSurface(picture_t *picture)
-@@ -383,8 +406,11 @@ static void AndroidUnlockSurface(picture_t *picture)
+@@ -383,8 +407,11 @@ static void AndroidUnlockSurface(picture_t *picture)
      picture_sys_t *picsys = picture->p_sys;
      vout_display_sys_t *sys = picsys->sys;
  
@@ -626,7 +627,7 @@ index ce1f922..bd7e9bf 100644
  
  static void Display(vout_display_t *vd, picture_t *picture, subpicture_t *subpicture)
 diff --git a/modules/video_output/android/utils.h b/modules/video_output/android/utils.h
-index 96d4f86..8a7f7a8 100644
+index 96d4f86..9b985fb 100644
 --- a/modules/video_output/android/utils.h
 +++ b/modules/video_output/android/utils.h
 @@ -24,6 +24,7 @@
@@ -637,7 +638,7 @@ index 96d4f86..8a7f7a8 100644
  #include <android/native_window.h>
  #include <jni.h>
  #include <android/native_window_jni.h>
-@@ -46,6 +47,18 @@ typedef struct
+@@ -46,6 +47,17 @@ typedef struct
      ptr_ANativeWindow_setBuffersGeometry setBuffersGeometry;
  } native_window_api_t;
  
@@ -645,7 +646,6 @@ index 96d4f86..8a7f7a8 100644
 +    pthread_mutex_t   vout_android_lock;
 +    pthread_cond_t    vout_android_surf_attached;
 +    void             *vout_android_gui;
-+    void             *vout_android_libvlc;
 +    jobject           vout_android_java_surf;
 +    jobject           vout_android_subtitles_surf;
 +    bool              vout_video_player_activity_created;
