@@ -4,13 +4,9 @@ Android-VLC-Patches
 Follow the steps in [AndroidCompile](https://wiki.videolan.org/AndroidCompile) to download and compile VLC for Androd.
 To use the commit hash shown below, after cloning the repository do:
 
-> git checkout 7a5c3cda60784b10510f3394c2f1b70e53292b91
+> git checkout 8b51735dab3c473f9697aa14c0b4b800fc217987
 
-After the compilation is finished apply the patches inside android-vlc folder:
-
-> git apply --verbose $PATH_TO_REPOSITORY/android-vlc/0001-Fix-package-name-for-expandMedia-and-loadPlaylist-na.patch
-
-> git apply --verbose $PATH_TO_REPOSITORY/android-vlc/0001-Add-support-for-multiple-video-instances.patch
+After the compilation is finished apply the patches inside android-vlc folder using "git apply" command.
 
 Change to vlc folder and apply patch:
 
@@ -20,11 +16,9 @@ Run:
 
 > git pull origin master
 
-> git checkout f1403d277547f10ba2d14d3bcbf86251c6c5f759
+> git checkout 5967150642d875f12aa69ecc853e935fc593077a
 
-> git apply --verbose $PATH_TO_REPOSITORY/vlc/0001-Fix-issue-with-jni_ConfigureSurface-return-value.patch
-
-> git apply --verbose $PATH_TO_REPOSITORY/vlc/0001-Add-support-for-multiple-video-instances.patch 
+Apply patches using "git apply" command.
 
 > cd ../
 
