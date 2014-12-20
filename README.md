@@ -44,5 +44,5 @@ Compiled libraries and Java source code can be found in the sdk/ folder.
 Note:
 =====
 
-The patches are based on android vlc commit hash 7a5c3cda60784b10510f3394c2f1b70e53292b91.
+The patches are based on android vlc commit hash 8b51735dab3c473f9697aa14c0b4b800fc217987.
 

@@ -1,0 +1,122 @@
+From a44024657cd03a29328ec8d614f39c9d212e32dd Mon Sep 17 00:00:00 2001
+From: Paulo Vitor Magacho da Silva <pvmagacho@gmail.com>
+Date: Thu, 4 Dec 2014 23:06:40 -0200
+Subject: [PATCH 2/4] Update surface object when it's destroyed and recreated.
+
+---
+ modules/video_output/android/android_window.c | 14 ++++++++++++++
+ modules/video_output/android/surface.c        | 23 +++++++++++++++++------
+ 2 files changed, 31 insertions(+), 6 deletions(-)
+
+diff --git a/modules/video_output/android/android_window.c b/modules/video_output/android/android_window.c
+index e584a54..5c50975 100644
+--- a/modules/video_output/android/android_window.c
++++ b/modules/video_output/android/android_window.c
+@@ -73,6 +73,7 @@ extern void jni_detach_thread();
+ extern jobject jni_LockAndGetAndroidJavaSurface();
+ extern jobject jni_LockAndGetSubtitlesSurface();
+ extern void  jni_UnlockAndroidSurface();
++extern bool  jni_LockAndGetIsSurfaceAttached();
+ 
+ extern void  jni_SetSurfaceLayout(int width, int height, int visible_width, int visible_height, int sar_num, int sar_den);
+ extern int jni_ConfigureSurface(jobject jsurf, int width, int height, int hal, bool *configured);
+@@ -954,6 +955,13 @@ static picture_pool_t *Pool(vout_display_t *vd, unsigned requested_count)
+ {
+     vout_display_sys_t *sys = vd->sys;
+ 
++    if (!jni_LockAndGetIsSurfaceAttached() && sys->pool != NULL) {
++        msg_Dbg(vd, "Surface got destroyed");
++        picture_pool_Release(sys->pool);
++        sys->pool = NULL;
++    }
++    jni_UnlockAndroidSurface();
++
+     if (sys->pool == NULL)
+         sys->pool = PoolAlloc(vd, requested_count);
+     return sys->pool;
+@@ -982,6 +990,12 @@ static void Prepare(vout_display_t *vd, picture_t *picture,
+             sys->p_sub_buffer_bounds = NULL;
+         }
+ 
++        if (!jni_LockAndGetIsSurfaceAttached() && sys->p_sub_pic != NULL) {
++            picture_Release(sys->p_sub_pic);
++            sys->p_sub_pic = NULL;
++        }
++        jni_UnlockAndroidSurface();
++
+         if (!sys->p_sub_pic && SetupWindowSubtitleSurface(sys) == 0)
+             sys->p_sub_pic = PictureAlloc(sys, &sys->p_sub_window->fmt);
+         if (!sys->p_spu_blend)
+diff --git a/modules/video_output/android/surface.c b/modules/video_output/android/surface.c
+index ce1f922..5ccb102 100644
+--- a/modules/video_output/android/surface.c
++++ b/modules/video_output/android/surface.c
+@@ -78,6 +78,7 @@ extern int jni_attach_thread(JNIEnv **env, const char *thread_name);
+ extern void jni_detach_thread();
+ extern jobject jni_LockAndGetAndroidJavaSurface();
+ extern void  jni_UnlockAndroidSurface();
++extern bool  jni_LockAndGetIsSurfaceAttached();
+ extern void *jni_AndroidJavaSurfaceToNativeSurface(jobject *surf);
+ extern void  jni_SetSurfaceLayout(int width, int height, int visible_width, int visible_height, int sar_num, int sar_den);
+ extern int jni_ConfigureSurface(jobject jsurf, int width, int height, int hal, bool *configured);
+@@ -329,10 +330,8 @@ static int  AndroidLockSurface(picture_t *picture)
+ 
+     if (!sys->native_surface) {
+         picsys->surf = jni_LockAndGetAndroidJavaSurface();
+-        if (unlikely(!picsys->surf)) {
+-            jni_UnlockAndroidSurface();
+-            return VLC_EGENERIC;
+-        }
++        if (unlikely(!picsys->surf))
++            goto error;
+         sys->native_surface = jni_AndroidJavaSurfaceToNativeSurface(picsys->surf);
+         jni_UnlockAndroidSurface();
+ 
+@@ -361,6 +360,11 @@ static int  AndroidLockSurface(picture_t *picture)
+         UpdateLayout(sys);
+     }
+ 
++    if (!jni_LockAndGetIsSurfaceAttached()) {
++        sys->native_surface = NULL;
++        goto error;
++    }
++
+     if (sys->s_lock)
+         sys->s_lock(sys->native_surface, info, 1);
+     else
+@@ -368,14 +372,20 @@ static int  AndroidLockSurface(picture_t *picture)
+ 
+     if (info->w != sys->i_alloc_width || info->h != sh) {
+         sys->s_unlockAndPost(sys->native_surface);
+-        return VLC_EGENERIC;
++        goto error;
+     }
+ 
++    jni_UnlockAndroidSurface();
++
+     picture->p[0].p_pixels = (uint8_t*)info->bits;
+     picture->p[0].i_lines = info->h;
+     picture->p[0].i_pitch = picture->p[0].i_pixel_pitch * info->s;
+ 
+     return VLC_SUCCESS;
++
++error:
++    jni_UnlockAndroidSurface();
++    return VLC_EGENERIC;
+ }
+ 
+ static void AndroidUnlockSurface(picture_t *picture)
+@@ -383,8 +393,9 @@ static void AndroidUnlockSurface(picture_t *picture)
+     picture_sys_t *picsys = picture->p_sys;
+     vout_display_sys_t *sys = picsys->sys;
+ 
+-    if (sys->native_surface)
++    if (jni_LockAndGetIsSurfaceAttached() && sys->native_surface)
+         sys->s_unlockAndPost(sys->native_surface);
++    jni_UnlockAndroidSurface();
+ }
+ 
+ static void Display(vout_display_t *vd, picture_t *picture, subpicture_t *subpicture)
+-- 
+1.9.3 (Apple Git-50)
+

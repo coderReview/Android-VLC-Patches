@@ -1,0 +1,106 @@
+From cd9173432f0667b7344bda7b205ec68823f68e2d Mon Sep 17 00:00:00 2001
+From: Paulo Vitor Magacho da Silva <pvmagacho@gmail.com>
+Date: Thu, 4 Dec 2014 23:57:21 -0200
+Subject: [PATCH 3/4] Add android object to Android surface information.
+
+---
+ include/vlc/libvlc_media_player.h | 17 +++++++++++++++++
+ lib/media_player.c                | 32 ++++++++++++++++++++++++++++++++
+ src/libvlc.c                      |  3 +++
+ 3 files changed, 52 insertions(+)
+
+diff --git a/include/vlc/libvlc_media_player.h b/include/vlc/libvlc_media_player.h
+index 1c73cf2..457bb8c 100644
+--- a/include/vlc/libvlc_media_player.h
++++ b/include/vlc/libvlc_media_player.h
+@@ -437,6 +437,23 @@ LIBVLC_API void libvlc_media_player_set_nsobject ( libvlc_media_player_t *p_mi,
+ LIBVLC_API void * libvlc_media_player_get_nsobject ( libvlc_media_player_t *p_mi );
+ 
+ /**
++ * Set the android_surface_value_t structure handler holding the Android surface information where
++ * the media player should render its video output.
++ *
++ * \param p_mi the Media Player
++ * \param object the android_surface_value_t structure to set.
++ */
++LIBVLC_API void libvlc_media_player_set_androidobject ( libvlc_media_player_t *p_mi, void * object );
++
++/**
++ * Gets a handler to the android_surface_value_t structure holding Android Surface object information.
++ *
++ * \param p_mi the Media Player
++ * \return the android_surface_value_t pointer or 0 if none where set
++ */
++LIBVLC_API void * libvlc_media_player_get_androidobject ( libvlc_media_player_t *p_mi );
++
++/**
+  * Set the agl handler where the media player should render its video output.
+  *
+  * \param p_mi the Media Player
+diff --git a/lib/media_player.c b/lib/media_player.c
+index 698f8d2..f6d121a 100644
+--- a/lib/media_player.c
++++ b/lib/media_player.c
+@@ -515,6 +515,9 @@ libvlc_media_player_new( libvlc_instance_t *instance )
+     var_Create (mp, "drawable-agl", VLC_VAR_INTEGER);
+     var_Create (mp, "drawable-nsobject", VLC_VAR_ADDRESS);
+ #endif
++#ifdef __ANDROID__
++    var_Create (mp, "drawable-androidobject", VLC_VAR_ADDRESS);
++#endif
+ 
+     var_Create (mp, "keyboard-events", VLC_VAR_BOOL);
+     var_SetBool (mp, "keyboard-events", true);
+@@ -1017,6 +1020,35 @@ void * libvlc_media_player_get_nsobject( libvlc_media_player_t *p_mi )
+ #endif
+ }
+ 
++
++/**************************************************************************
++ * set_androidobject
++ ******************************************u*******************************/
++void libvlc_media_player_set_androidobject( libvlc_media_player_t *p_mi,
++                                            void * object )
++{
++    assert (p_mi != NULL);
++#ifdef __ANDROID__
++    var_SetAddress (p_mi, "drawable-androidobject", object);
++#else
++    (void) p_mi; (void)object;
++#endif
++}
++
++/**************************************************************************
++ * get_androidobject
++ **************************************************************************/
++void * libvlc_media_player_get_androidobject( libvlc_media_player_t *p_mi )
++{
++    assert (p_mi != NULL);
++#ifdef __ANDROID__
++    return var_GetAddress (p_mi, "drawable-androidobject");
++#else
++    return NULL;
++#endif
++}
++
++
+ /**************************************************************************
+  * set_agl
+  **************************************************************************/
+diff --git a/src/libvlc.c b/src/libvlc.c
+index 946ce2e..f888d87 100644
+--- a/src/libvlc.c
++++ b/src/libvlc.c
+@@ -485,6 +485,9 @@ dbus_out:
+     var_Create( p_libvlc, "drawable-clip-right", VLC_VAR_INTEGER );
+     var_Create( p_libvlc, "drawable-nsobject", VLC_VAR_ADDRESS );
+ #endif
++#ifdef __ANDROID__
++    var_Create( p_libvlc, "drawable-androidobject", VLC_VAR_ADDRESS);
++#endif
+ #if defined (_WIN32) || defined (__OS2__)
+     var_Create( p_libvlc, "drawable-hwnd", VLC_VAR_INTEGER );
+ #endif
+-- 
+1.9.3 (Apple Git-50)
+

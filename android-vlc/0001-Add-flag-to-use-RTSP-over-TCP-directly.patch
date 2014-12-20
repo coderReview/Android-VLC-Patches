@@ -1,0 +1,181 @@
+From 7281c5537afb64fb934a44a8ab4dd875bb889e32 Mon Sep 17 00:00:00 2001
+From: Paulo Vitor Magacho da Silva <pvmagacho@gmail.com>
+Date: Wed, 3 Dec 2014 22:37:53 -0200
+Subject: [PATCH 1/3] Add flag to use RTSP over TCP directly
+
+---
+ libvlc/jni/libvlcjni-track.c                  |  4 ++--
+ libvlc/jni/libvlcjni.c                        |  6 +++---
+ libvlc/jni/thumbnailer.c                      |  2 +-
+ libvlc/jni/utils.h                            |  2 +-
+ libvlc/src/org/videolan/libvlc/LibVLC.java    |  5 ++++-
+ libvlc/src/org/videolan/libvlc/MediaList.java | 22 ++++++++++++++--------
+ 6 files changed, 25 insertions(+), 16 deletions(-)
+
+diff --git a/libvlc/jni/libvlcjni-track.c b/libvlc/jni/libvlcjni-track.c
+index cfc70ce..1e131f9 100644
+--- a/libvlc/jni/libvlcjni-track.c
++++ b/libvlc/jni/libvlcjni-track.c
+@@ -48,7 +48,7 @@ jboolean Java_org_videolan_libvlc_LibVLC_hasVideoTrack(JNIEnv *env, jobject thiz
+                                                        jstring fileLocation)
+ {
+     /* Create a new item and assign it to the media player. */
+-    libvlc_media_t *p_m = new_media(env, thiz, fileLocation, false, false);
++    libvlc_media_t *p_m = new_media(env, thiz, fileLocation, false, false, false);
+     if (p_m == NULL)
+     {
+         LOGE("Could not create the media!");
+@@ -186,7 +186,7 @@ jobjectArray Java_org_videolan_libvlc_LibVLC_readTracksInfo(JNIEnv *env, jobject
+                                                             jstring mrl)
+ {
+     /* Create a new item and assign it to the media player. */
+-    libvlc_media_t *p_m = new_media(env, thiz, mrl, false, false);
++    libvlc_media_t *p_m = new_media(env, thiz, mrl, false, false, false);
+     if (p_m == NULL)
+     {
+         LOGE("Could not create the media!");
+diff --git a/libvlc/jni/libvlcjni.c b/libvlc/jni/libvlcjni.c
+index 94b216c..a9662db 100644
+--- a/libvlc/jni/libvlcjni.c
++++ b/libvlc/jni/libvlcjni.c
+@@ -72,7 +72,7 @@ static void add_media_options(libvlc_media_t *p_md, JNIEnv *env, jobjectArray me
+     }
+ }
+ 
+-libvlc_media_t *new_media(JNIEnv *env, jobject thiz, jstring fileLocation, bool noOmx, bool noVideo)
++libvlc_media_t *new_media(JNIEnv *env, jobject thiz, jstring fileLocation, bool noOmx, bool noVideo, bool useTcp)
+ {
+     libvlc_instance_t *libvlc = getLibVlcInstance(env, thiz);
+     jboolean isCopy;
+@@ -83,10 +83,10 @@ libvlc_media_t *new_media(JNIEnv *env, jobject thiz, jstring fileLocation, bool
+         return NULL;
+ 
+     jclass cls = (*env)->GetObjectClass(env, thiz);
+-    jmethodID methodId = (*env)->GetMethodID(env, cls, "getMediaOptions", "(ZZ)[Ljava/lang/String;");
++    jmethodID methodId = (*env)->GetMethodID(env, cls, "getMediaOptions", "(ZZZ)[Ljava/lang/String;");
+     if (methodId != NULL)
+     {
+-        jobjectArray mediaOptions = (*env)->CallObjectMethod(env, thiz, methodId, noOmx, noVideo);
++        jobjectArray mediaOptions = (*env)->CallObjectMethod(env, thiz, methodId, noOmx, noVideo, useTcp);
+         if (mediaOptions != NULL)
+         {
+             add_media_options(p_md, env, mediaOptions);
+diff --git a/libvlc/jni/thumbnailer.c b/libvlc/jni/thumbnailer.c
+index 0b8aae3..4f61d6f 100644
+--- a/libvlc/jni/thumbnailer.c
++++ b/libvlc/jni/thumbnailer.c
+@@ -161,7 +161,7 @@ jbyteArray Java_org_videolan_libvlc_LibVLC_getThumbnail(JNIEnv *env, jobject thi
+     libvlc_media_player_t *mp = libvlc_media_player_new(libvlc);
+     libvlc_media_player_set_video_title_display(mp, libvlc_position_disable, 0);
+ 
+-    libvlc_media_t *m = new_media(env, thiz, filePath, true, false);
++    libvlc_media_t *m = new_media(env, thiz, filePath, true, false, false);
+     if (m == NULL)
+     {
+         LOGE("Could not create the media to play!");
+diff --git a/libvlc/jni/utils.h b/libvlc/jni/utils.h
+index 5da3514..f5b9f8d 100644
+--- a/libvlc/jni/utils.h
++++ b/libvlc/jni/utils.h
+@@ -21,7 +21,7 @@
+ #ifndef LIBVLCJNI_UTILS_H
+ #define LIBVLCJNI_UTILS_H
+ 
+-libvlc_media_t *new_media(JNIEnv *env, jobject thiz, jstring fileLocation, bool noOmx, bool noVideo);
++libvlc_media_t *new_media(JNIEnv *env, jobject thiz, jstring fileLocation, bool noOmx, bool noVideo, bool useTcp);
+ 
+ libvlc_instance_t *getLibVlcInstance(JNIEnv *env, jobject thiz);
+ 
+diff --git a/libvlc/src/org/videolan/libvlc/LibVLC.java b/libvlc/src/org/videolan/libvlc/LibVLC.java
+index 8bac400..822999a 100644
+--- a/libvlc/src/org/videolan/libvlc/LibVLC.java
++++ b/libvlc/src/org/videolan/libvlc/LibVLC.java
+@@ -359,7 +359,7 @@ public class LibVLC {
+         }
+     }
+ 
+-    public String[] getMediaOptions(boolean noHardwareAcceleration, boolean noVideo) {
++    public String[] getMediaOptions(boolean noHardwareAcceleration, boolean noVideo, boolean useTcp) {
+         if (this.devHardwareDecoder != DEV_HW_DECODER_AUTOMATIC)
+             noHardwareAcceleration = noVideo = false;
+         else if (!noHardwareAcceleration)
+@@ -384,6 +384,9 @@ public class LibVLC {
+         if (noVideo)
+             options.add(":no-video");
+ 
++        if (useTcp)
++            options.add(":rtsp-tcp");
++
+         return options.toArray(new String[options.size()]);
+     }
+ 
+diff --git a/libvlc/src/org/videolan/libvlc/MediaList.java b/libvlc/src/org/videolan/libvlc/MediaList.java
+index 7888f6f..a1e057d 100644
+--- a/libvlc/src/org/videolan/libvlc/MediaList.java
++++ b/libvlc/src/org/videolan/libvlc/MediaList.java
+@@ -1,7 +1,7 @@
+ /*****************************************************************************
+  * MediaList.java
+  *****************************************************************************
+- * Copyright © 2013 VLC authors and VideoLAN
++ * Copyright © 2013-2014 VLC authors and VideoLAN
+  * Copyright © 2013 Edward Wang
+  *
+  * This program is free software; you can redistribute it and/or modify it
+@@ -36,12 +36,13 @@ public class MediaList {
+         Media m;
+         boolean noVideo; // default false
+         boolean noHardwareAcceleration; // default false
++        boolean useTcp; // default false
+ 
+         public MediaHolder(Media media) {
+-            m = media; noVideo = false; noHardwareAcceleration = false;
++            m = media; noVideo = false; noHardwareAcceleration = false; useTcp = false;
+         }
+-        public MediaHolder(Media m_, boolean noVideo_, boolean noHardwareAcceleration_) {
+-            m = m_; noVideo = noVideo_; noHardwareAcceleration = noHardwareAcceleration_;
++        public MediaHolder(Media m_, boolean noVideo_, boolean noHardwareAcceleration_, boolean useTcp_) {
++            m = m_; noVideo = noVideo_; noHardwareAcceleration = noHardwareAcceleration_; useTcp = useTcp_;
+         }
+     }
+ 
+@@ -68,13 +69,16 @@ public class MediaList {
+         add(new Media(mLibVLC, mrl));
+     }
+     public void add(Media media) {
+-        add(media, false, false);
++        add(media, false, false, false);
+     }
+     public void add(Media media, boolean noVideo) {
+-        add(media, noVideo, false);
++        add(media, noVideo, false, false);
+     }
+     public void add(Media media, boolean noVideo, boolean noHardwareAcceleration) {
+-        mInternalList.add(new MediaHolder(media, noVideo, noHardwareAcceleration));
++        add(media, noVideo, false, false);
++    }
++    public void add(Media media, boolean noVideo, boolean noHardwareAcceleration, boolean useTcp) {
++        mInternalList.add(new MediaHolder(media, noVideo, noHardwareAcceleration, useTcp));
+         signal_list_event(EventHandler.CustomMediaListItemAdded, mInternalList.size() - 1, media.getLocation());
+     }
+ 
+@@ -198,13 +202,15 @@ public class MediaList {
+     public String[] getMediaOptions(int position) {
+         boolean noHardwareAcceleration = false;
+         boolean noVideo = false;
++        boolean useTcp = true;
+         if (isValid(position))
+         {
+             noHardwareAcceleration = mInternalList.get(position).noHardwareAcceleration;
+             noVideo = mInternalList.get(position).noVideo;
++            useTcp = mInternalList.get(position).useTcp;
+         }
+ 
+-        return mLibVLC.getMediaOptions(noHardwareAcceleration, noVideo);
++        return mLibVLC.getMediaOptions(noHardwareAcceleration, noVideo, useTcp);
+     }
+ 
+     public EventHandler getEventHandler() {
+-- 
+1.9.3 (Apple Git-50)
+

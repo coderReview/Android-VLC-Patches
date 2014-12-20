@@ -1,7 +1,7 @@
-From 87f6189811a8ea6d2e126d37b9175e15dd74378f Mon Sep 17 00:00:00 2001
+From 6478b8c881fce1e58c58105b7c92d627f1e6bb35 Mon Sep 17 00:00:00 2001
 From: Paulo Vitor Magacho da Silva <pvmagacho@gmail.com>
 Date: Thu, 27 Nov 2014 22:17:46 -0200
-Subject: [PATCH 1/2] Fix issue with jni_ConfigureSurface return value. Only
+Subject: [PATCH 1/4] Fix issue with jni_ConfigureSurface return value. Only
  check for configure flag if return is equal to 0. Return value of -1 is
  ignored.
 

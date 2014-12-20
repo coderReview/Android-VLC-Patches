@@ -1,0 +1,28 @@
+From 9a4c03ea1c5526641d0c81e047a1306d27f230de Mon Sep 17 00:00:00 2001
+From: Paulo Vitor Magacho da Silva <pvmagacho@gmail.com>
+Date: Thu, 4 Dec 2014 23:17:13 -0200
+Subject: [PATCH 2/3] Update surface object when it's destroyed and recreated.
+
+---
+ libvlc/jni/vout.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/libvlc/jni/vout.c b/libvlc/jni/vout.c
+index 04c933c..6362f0c 100644
+--- a/libvlc/jni/vout.c
++++ b/libvlc/jni/vout.c
+@@ -53,6 +53,11 @@ void jni_UnlockAndroidSurface() {
+     pthread_mutex_unlock(&vout_android_lock);
+ }
+ 
++bool jni_LockAndGetIsSurfaceAttached() {
++    pthread_mutex_unlock(&vout_android_lock);
++    return vout_android_java_surf != NULL;
++}
++
+ void jni_EventHardwareAccelerationError()
+ {
+     JNIEnv *env;
+-- 
+1.9.3 (Apple Git-50)
+

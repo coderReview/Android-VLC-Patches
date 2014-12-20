@@ -1,7 +1,7 @@
-From 3c756a6de919b4782787edf870993236f08d2b41 Mon Sep 17 00:00:00 2001
+From 019da27d1a0064e5f1a1112e44d6eb73f09e48de Mon Sep 17 00:00:00 2001
 From: Paulo Vitor Magacho da Silva <pvmagacho@gmail.com>
 Date: Tue, 2 Dec 2014 08:16:10 -0200
-Subject: [PATCH] Add support for multiple video instances.
+Subject: [PATCH 3/3] Add support for multiple video instances.
 
 ---
  libvlc/jni/libvlcjni-equalizer.c                   |   4 +-
@@ -10,18 +10,18 @@ Subject: [PATCH] Add support for multiple video instances.
  libvlc/jni/native_crash_handler.c                  |  25 +--
  libvlc/jni/native_crash_handler.h                  |   5 +-
  libvlc/jni/utils.h                                 |   2 -
- libvlc/jni/vout.c                                  | 186 ++++++++++++---------
+ libvlc/jni/vout.c                                  | 188 ++++++++++++---------
  libvlc/jni/vout.h                                  |  24 ++-
  libvlc/src/org/videolan/libvlc/EventHandler.java   |   8 -
- libvlc/src/org/videolan/libvlc/LibVLC.java         |  98 +++--------
- libvlc/src/org/videolan/libvlc/LibVlcUtil.java     |  56 ++++++-
+ libvlc/src/org/videolan/libvlc/LibVLC.java         | 100 +++--------
+ libvlc/src/org/videolan/libvlc/LibVlcUtil.java     |  56 +++++-
  .../org/videolan/libvlc/NativeCrashHandler.java    |  64 +++++++
  .../src/org/videolan/vlc/VLCApplication.java       |  15 +-
  .../src/org/videolan/vlc/audio/AudioService.java   |  14 +-
  .../org/videolan/vlc/gui/PreferencesActivity.java  |   2 +-
  .../vlc/gui/video/VideoPlayerActivity.java         |   9 +-
  .../src/org/videolan/vlc/util/VLCInstance.java     |  14 +-
- 17 files changed, 399 insertions(+), 323 deletions(-)
+ 17 files changed, 398 insertions(+), 328 deletions(-)
  create mode 100644 libvlc/src/org/videolan/libvlc/NativeCrashHandler.java
 
 diff --git a/libvlc/jni/libvlcjni-equalizer.c b/libvlc/jni/libvlcjni-equalizer.c
@@ -70,7 +70,7 @@ index 205d59d..67c2554 100644
  {
      bool isAttached = false;
 diff --git a/libvlc/jni/libvlcjni.c b/libvlc/jni/libvlcjni.c
-index ecfb02e..6f35182 100644
+index a9662db..78f5e25 100644
 --- a/libvlc/jni/libvlcjni.c
 +++ b/libvlc/jni/libvlcjni.c
 @@ -38,7 +38,6 @@
@@ -213,7 +213,7 @@ index ecfb02e..6f35182 100644
  }
  
  int jni_attach_thread(JNIEnv **env, const char *thread_name)
-@@ -353,8 +370,6 @@ void Java_org_videolan_libvlc_LibVLC_nativeInit(JNIEnv *env, jobject thiz)
+@@ -354,8 +371,6 @@ void Java_org_videolan_libvlc_LibVLC_nativeInit(JNIEnv *env, jobject thiz)
      };
      libvlc_instance_t *instance = libvlc_new(sizeof(argv) / sizeof(*argv), argv);
  
@@ -222,7 +222,7 @@ index ecfb02e..6f35182 100644
      (*env)->ReleaseStringUTFChars(env, chroma, chromastr);
      (*env)->ReleaseStringUTFChars(env, subsencoding, subsencodingstr);
  
-@@ -364,45 +379,45 @@ void Java_org_videolan_libvlc_LibVLC_nativeInit(JNIEnv *env, jobject thiz)
+@@ -365,45 +380,45 @@ void Java_org_videolan_libvlc_LibVLC_nativeInit(JNIEnv *env, jobject thiz)
          (*env)->ThrowNew(env, exc, "Unable to instantiate LibVLC");
      }
  
@@ -291,7 +291,7 @@ index ecfb02e..6f35182 100644
  }
  
  void Java_org_videolan_libvlc_LibVLC_playMRL(JNIEnv *env, jobject thiz,
-@@ -411,25 +426,24 @@ void Java_org_videolan_libvlc_LibVLC_playMRL(JNIEnv *env, jobject thiz,
+@@ -412,25 +427,24 @@ void Java_org_videolan_libvlc_LibVLC_playMRL(JNIEnv *env, jobject thiz,
      /* Release previous media player, if any */
      releaseMediaPlayer(env, thiz);
  
@@ -324,7 +324,7 @@ index ecfb02e..6f35182 100644
      static const libvlc_event_type_t mp_events[] = {
          libvlc_MediaPlayerPlaying,
          libvlc_MediaPlayerPaused,
-@@ -441,10 +455,7 @@ void Java_org_videolan_libvlc_LibVLC_playMRL(JNIEnv *env, jobject thiz,
+@@ -442,10 +456,7 @@ void Java_org_videolan_libvlc_LibVLC_playMRL(JNIEnv *env, jobject thiz,
          libvlc_MediaPlayerEncounteredError
      };
      for(int i = 0; i < (sizeof(mp_events) / sizeof(*mp_events)); i++)
@@ -336,7 +336,7 @@ index ecfb02e..6f35182 100644
  
      cls = (*env)->GetObjectClass(env, thiz);
      jmethodID methodID = (*env)->GetMethodID(env, cls, "applyEqualizer", "()V");
-@@ -452,13 +463,16 @@ void Java_org_videolan_libvlc_LibVLC_playMRL(JNIEnv *env, jobject thiz,
+@@ -453,13 +464,16 @@ void Java_org_videolan_libvlc_LibVLC_playMRL(JNIEnv *env, jobject thiz,
  
      const char* p_mrl = (*env)->GetStringUTFChars(env, mrl, 0);
  
@@ -354,7 +354,7 @@ index ecfb02e..6f35182 100644
      /* Connect the media event manager. */
      libvlc_event_manager_t *ev_media = libvlc_media_event_manager(p_md);
      static const libvlc_event_type_t mp_media_events[] = {
-@@ -466,10 +480,10 @@ void Java_org_videolan_libvlc_LibVLC_playMRL(JNIEnv *env, jobject thiz,
+@@ -467,10 +481,10 @@ void Java_org_videolan_libvlc_LibVLC_playMRL(JNIEnv *env, jobject thiz,
          libvlc_MediaMetaChanged,
      };
      for(int i = 0; i < (sizeof(mp_media_events) / sizeof(*mp_media_events)); i++)
@@ -368,7 +368,7 @@ index ecfb02e..6f35182 100644
  }
  
  jfloat Java_org_videolan_libvlc_LibVLC_getRate(JNIEnv *env, jobject thiz) {
-@@ -654,23 +668,26 @@ void Java_org_videolan_libvlc_LibVLC_playerNavigate(JNIEnv *env, jobject thiz, j
+@@ -655,23 +669,26 @@ void Java_org_videolan_libvlc_LibVLC_playerNavigate(JNIEnv *env, jobject thiz, j
          libvlc_media_player_navigate(mp, (unsigned) nav);
  }
  
@@ -494,10 +494,10 @@ index f5b9f8d..e136bcb 100644
  
  #endif // LIBVLCJNI_UTILS_H
 diff --git a/libvlc/jni/vout.c b/libvlc/jni/vout.c
-index 04c933c..7cdc234 100644
+index 6362f0c..aeec651 100644
 --- a/libvlc/jni/vout.c
 +++ b/libvlc/jni/vout.c
-@@ -22,100 +22,104 @@
+@@ -22,105 +22,105 @@
  #include <vlc_common.h>
  
  #include <jni.h>
@@ -528,13 +528,6 @@ index 04c933c..7cdc234 100644
 +    while (android_surface->vout_android_subtitles_surf == NULL)
 +        pthread_cond_wait(&android_surface->vout_android_surf_attached, &android_surface->vout_android_lock);
 +    return android_surface->vout_android_subtitles_surf;
-+}
-+
-+jobject jni_LockAndGetAndroidJavaSurface(android_surf_value_t *android_surface) {
-+    pthread_mutex_lock(&android_surface->vout_android_lock);
-+    while (android_surface->vout_android_java_surf == NULL)
-+        pthread_cond_wait(&android_surface->vout_android_surf_attached, &android_surface->vout_android_lock);
-+    return android_surface->vout_android_java_surf;
  }
  
 -jobject jni_LockAndGetAndroidJavaSurface() {
@@ -542,14 +535,25 @@ index 04c933c..7cdc234 100644
 -    while (vout_android_java_surf == NULL)
 -        pthread_cond_wait(&vout_android_surf_attached, &vout_android_lock);
 -    return vout_android_java_surf;
-+void jni_LockAndroidSurface(android_surf_value_t *android_surface) {
++jobject jni_LockAndGetAndroidJavaSurface(android_surf_value_t *android_surface) {
 +    pthread_mutex_lock(&android_surface->vout_android_lock);
++    while (android_surface->vout_android_java_surf == NULL)
++        pthread_cond_wait(&android_surface->vout_android_surf_attached, &android_surface->vout_android_lock);
++    return android_surface->vout_android_java_surf;
  }
  
 -void jni_UnlockAndroidSurface() {
 -    pthread_mutex_unlock(&vout_android_lock);
 +void jni_UnlockAndroidSurface(android_surf_value_t *android_surface) {
 +    pthread_mutex_unlock(&android_surface->vout_android_lock);
+ }
+ 
+-bool jni_LockAndGetIsSurfaceAttached() {
+-    pthread_mutex_unlock(&vout_android_lock);
+-    return vout_android_java_surf != NULL;
++bool jni_LockAndGetIsSurfaceAttached(android_surf_value_t *android_surface) {
++    pthread_mutex_unlock(&android_surface->vout_android_lock);
++    return android_surface->vout_android_java_surf != NULL;
  }
  
 -void jni_EventHardwareAccelerationError()
@@ -639,7 +643,7 @@ index 04c933c..7cdc234 100644
  {
      JNIEnv *p_env;
      jclass clz;
-@@ -154,28 +158,29 @@ void *jni_AndroidJavaSurfaceToNativeSurface(jobject *surf)
+@@ -159,28 +159,29 @@ void *jni_AndroidJavaSurfaceToNativeSurface(jobject *surf)
      return native_surface;
  }
  
@@ -676,7 +680,7 @@ index 04c933c..7cdc234 100644
      if (ret >= 0 && configured)
          *configured = ret == 1;
  
-@@ -183,62 +188,81 @@ int jni_ConfigureSurface(jobject jsurf, int width, int height, int hal, bool *co
+@@ -188,62 +189,81 @@ int jni_ConfigureSurface(jobject jsurf, int width, int height, int hal, bool *co
  
      if (isAttached)
          jni_detach_thread();
@@ -854,7 +858,7 @@ index 4ec0861..2d13d30 100644
          if (!mEventHandler.contains(handler))
              mEventHandler.add(handler);
 diff --git a/libvlc/src/org/videolan/libvlc/LibVLC.java b/libvlc/src/org/videolan/libvlc/LibVLC.java
-index fde2704..aaf640f 100644
+index 822999a..aaf640f 100644
 --- a/libvlc/src/org/videolan/libvlc/LibVLC.java
 +++ b/libvlc/src/org/videolan/libvlc/LibVLC.java
 @@ -1,7 +1,7 @@
@@ -898,7 +902,7 @@ index fde2704..aaf640f 100644
      /** Check in libVLC already initialized otherwise crash */
      private boolean mIsInitialized = false;
      public native void attachSurface(Surface surface, IVideoPlayer player);
-@@ -113,52 +110,6 @@ public class LibVLC {
+@@ -113,54 +110,6 @@ public class LibVLC {
  
      public native void eventVideoPlayerActivityCreated(boolean created);
  
@@ -912,8 +916,10 @@ index fde2704..aaf640f 100644
 -                    System.loadLibrary("anw.13");
 -                else if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.JELLY_BEAN_MR1)
 -                    System.loadLibrary("anw.14");
--                else
+-                else if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.KITKAT_WATCH)
 -                    System.loadLibrary("anw.18");
+-                else
+-                    System.loadLibrary("anw.21");
 -            } catch (Throwable t) {
 -                Log.w(TAG, "Unable to load the anw library: " + t);
 -            }
@@ -951,7 +957,7 @@ index fde2704..aaf640f 100644
      /**
       * Singleton constructor of libVLC Without surface and vout to create the
       * thumbnail and get information e.g. on the MediaLibraryActivity
-@@ -190,10 +141,9 @@ public class LibVLC {
+@@ -192,10 +141,9 @@ public class LibVLC {
      }
  
      /**
@@ -964,7 +970,7 @@ index fde2704..aaf640f 100644
          mAout = new AudioOutput();
      }
  
-@@ -259,7 +209,7 @@ public class LibVLC {
+@@ -261,7 +209,7 @@ public class LibVLC {
       */
      public native void setSurface(Surface f);
  
@@ -973,7 +979,7 @@ index fde2704..aaf640f 100644
          if (sInstance != null) {
              try {
                  sInstance.destroy();
-@@ -270,6 +220,15 @@ public class LibVLC {
+@@ -272,6 +220,15 @@ public class LibVLC {
          }
      }
  
@@ -989,7 +995,7 @@ index fde2704..aaf640f 100644
      /**
       * those get/is* are called from native code to get settings values.
       */
-@@ -491,11 +450,11 @@ public class LibVLC {
+@@ -493,11 +450,11 @@ public class LibVLC {
          applyEqualizer();
      }
  
@@ -1004,7 +1010,7 @@ index fde2704..aaf640f 100644
  
      public boolean frameSkipEnabled() {
          return frameSkip;
-@@ -531,7 +490,7 @@ public class LibVLC {
+@@ -533,7 +490,7 @@ public class LibVLC {
      public void init(Context context) throws LibVlcException {
          Log.v(TAG, "Initializing LibVLC");
          mDebugLogBuffer = new StringBuffer();
@@ -1013,7 +1019,7 @@ index fde2704..aaf640f 100644
              if(!LibVlcUtil.hasCompatibleCPU(context)) {
                  Log.e(TAG, LibVlcUtil.getErrorMsg());
                  throw new LibVlcException();
-@@ -541,7 +500,6 @@ public class LibVLC {
+@@ -543,7 +500,6 @@ public class LibVLC {
              mCachePath = (cacheDir != null) ? cacheDir.getAbsolutePath() : null;
              nativeInit();
              mMediaList = mPrimaryList = new MediaList(this);
@@ -1021,7 +1027,7 @@ index fde2704..aaf640f 100644
              mIsInitialized = true;
          }
      }
-@@ -553,7 +511,6 @@ public class LibVLC {
+@@ -555,7 +511,6 @@ public class LibVLC {
      public void destroy() {
          Log.v(TAG, "Destroying LibVLC instance");
          nativeDestroy();
@@ -1029,7 +1035,7 @@ index fde2704..aaf640f 100644
          mIsInitialized = false;
      }
  
-@@ -833,27 +790,14 @@ public class LibVLC {
+@@ -835,27 +790,14 @@ public class LibVLC {
          return mMediaList.expandMedia(mInternalMediaPlayerIndex);
      }
  
@@ -1324,10 +1330,10 @@ index c33abc8..d039fba 100644
  
              // Notify everyone
 diff --git a/vlc-android/src/org/videolan/vlc/gui/PreferencesActivity.java b/vlc-android/src/org/videolan/vlc/gui/PreferencesActivity.java
-index 9f0109c..b069452 100644
+index fc7d695..6a2cfed 100644
 --- a/vlc-android/src/org/videolan/vlc/gui/PreferencesActivity.java
 +++ b/vlc-android/src/org/videolan/vlc/gui/PreferencesActivity.java
-@@ -292,7 +292,7 @@ public class PreferencesActivity extends PreferenceActivity implements OnSharedP
+@@ -299,7 +299,7 @@ public class PreferencesActivity extends PreferenceActivity implements OnSharedP
                  || key.equalsIgnoreCase("network_caching")
                  || key.equalsIgnoreCase("dev_hardware_decoder")) {
              VLCInstance.updateLibVlcSettings(sharedPreferences);
