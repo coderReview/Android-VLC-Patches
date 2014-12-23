@@ -8,7 +8,7 @@ To use the commit hash shown below, after cloning the repository do:
 
 After the compilation is finished apply the patches inside android-vlc folder using "git apply" command.
 
-Change to vlc folder and apply patch:
+Change to vlc:
 
 > cd vlc/
 
